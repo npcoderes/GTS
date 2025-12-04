@@ -1,0 +1,24 @@
+"""
+Simple script to add cancelled trip via Django shell
+Copy and paste this into: python manage.py shell
+"""
+
+from django.utils import timezone
+from logistics.models import Trip, Vehicle, Driver
+from core.models import Station
+
+ms = Station.objects.filter(type='MS').first()
+dbs = Station.objects.filter(type='DBS').first()
+vehicle = Vehicle.objects.first()
+driver = Driver.objects.first()
+
+if ms and dbs and vehicle:
+    trip = Trip.objects.create(
+        ms=ms,
+        dbs=dbs,
+        vehicle=vehicle,
+        driver=driver,
+        status='CANCELLED',
+        started_at=timezone.now()
+    )
+    print(f'Created CANCELLED trip ID: {trip.id}')
