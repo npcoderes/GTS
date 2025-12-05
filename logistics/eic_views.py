@@ -89,12 +89,14 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
     def approve(self, request, pk=None):
         """
         Approve or Reject stock request based on status in payload.
+        If driver_id is provided with APPROVED status, assigns driver immediately.
         
         POST /api/eic/stock-requests/{id}/approve/
         
         Payload:
         {
             "status": "APPROVED" or "REJECTED",
+            "driver_id": 123,  // Optional - if provided, assigns driver immediately
             "notes": "Optional notes",
             "reason": "Optional rejection reason"
         }
@@ -111,6 +113,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         new_status = request.data.get('status', 'APPROVED').upper()
         notes = request.data.get('notes', '')
         reason = request.data.get('reason', '')
+        driver_id = request.data.get('driverId')  # NEW: Optional driver assignment (camelCase for frontend)
         
         # Validate status value
         if new_status not in ['APPROVED', 'REJECTED']:
@@ -129,17 +132,106 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             with transaction.atomic():
                 if new_status == 'APPROVED':
-                    # Approve the request
-                    stock_request.status = 'APPROVED'
-                    stock_request.approval_notes = notes
-                    stock_request.save()
-                    
-                    return Response({
-                        'success': True,
-                        'status': 'approved',
-                        'stock_request_id': stock_request.id,
-                        'message': 'Stock request approved. Pending vehicle assignment.'
-                    })
+                    # If driver_id is provided, approve AND assign in one step
+                    if driver_id:
+                        # Get driver details
+                        try:
+                            driver = Driver.objects.select_related('user', 'assigned_vehicle').get(id=driver_id)
+                        except Driver.DoesNotExist:
+                            return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+                        
+                        # Verify driver is available (has active shift and not on trip)
+                        now = timezone.now()
+                        active_shift = Shift.objects.filter(
+                            driver=driver,
+                            status='APPROVED',
+                            start_time__lte=now,
+                            end_time__gte=now
+                        ).first()
+                        
+                        if not active_shift:
+                            return Response({
+                                'error': 'Driver does not have an active shift'
+                            }, status=status.HTTP_400_BAD_REQUEST)
+                        
+                        # Check if driver is on an active trip
+                        active_trip = Trip.objects.filter(
+                            driver=driver,
+                            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS']
+                        ).exists()
+                        
+                        if active_trip:
+                            return Response({
+                                'error': 'Driver is currently on another trip'
+                            }, status=status.HTTP_400_BAD_REQUEST)
+                        
+                        # Update stock request - approve and assign
+                        stock_request.status = 'ASSIGNING'
+                        stock_request.approval_notes = notes
+                        stock_request.assignment_mode = 'MANUAL'
+                        stock_request.assignment_started_at = timezone.now()
+                        stock_request.target_driver_id = driver_id
+                        stock_request.save()
+                        
+                        # Send FCM notification to driver
+                        driver_notified = False
+                        try:
+                            from core.notification_service import NotificationService
+                            notification_service = NotificationService()
+                            
+                            if driver.user:
+                                # Reload stock_request with related data
+                                stock_request.refresh_from_db()
+                                dbs = stock_request.dbs
+                                ms_name = ''
+                                dbs_name = ''
+                                
+                                if dbs:
+                                    dbs_name = dbs.name or ''
+                                    # Get parent MS
+                                    if dbs.parent_station:
+                                        ms_name = dbs.parent_station.name or ''
+                                
+                                notification_service.send_to_user(
+                                    user=driver.user,
+                                    title="New Trip Assignment",
+                                    body="Tap to view trip details",
+                                    data={
+                                        'type': 'TRIP_OFFER',
+                                        'stock_request_id': str(stock_request.id),
+                                        'from_ms': ms_name,
+                                        'to_dbs': dbs_name,
+                                        'quantity': str(stock_request.requested_qty_kg)
+                                    }
+                                )
+                                driver_notified = True
+                        except Exception as e:
+                            print(f"Notification error: {e}")
+                        
+                        return Response({
+                            'success': True,
+                            'status': 'assigning',
+                            'stock_request_id': stock_request.id,
+                            'driver_id': driver_id,
+                            'driver_name': driver.full_name,
+                            'driver_phone': driver.phone,
+                            'vehicle_no': active_shift.vehicle.registration_no,
+                            'notification_sent': driver_notified,
+                            'message': 'Stock request approved. Driver has been notified.',
+                            'expires_in_seconds': 300
+                        })
+                    else:
+                        # Just approve without assigning driver
+                        stock_request.status = 'APPROVED'
+                        stock_request.approval_notes = notes
+                        stock_request.save()
+                        
+                        return Response({
+                            'success': True,
+                            'status': 'approved',
+                            'stock_request_id': stock_request.id,
+                            'message': 'Stock request approved. Please assign a driver.'
+                        })
                 else:
                     # Reject the request
                     stock_request.status = 'REJECTED'
@@ -228,59 +320,132 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
             
         return Response(data)
 
-    @action(detail=True, methods=['post'], url_path='assign-auto')
-    def assign_auto(self, request, pk=None):
-        """
-        Trigger Auto-Push assignment
-        """
-        if not check_eic_permission(request.user):
-            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+    # @action(detail=True, methods=['post'], url_path='assign-auto')
+    # def assign_auto(self, request, pk=None):
+    #     """
+    #     Trigger Auto-Push assignment
+    #     """
+    #     if not check_eic_permission(request.user):
+    #         return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
             
-        stock_request = self.get_object()
+    #     stock_request = self.get_object()
         
-        if stock_request.status != 'APPROVED':
-            return Response({'error': 'Request must be APPROVED to assign'}, status=status.HTTP_400_BAD_REQUEST)
+    #     if stock_request.status != 'APPROVED':
+    #         return Response({'error': 'Request must be APPROVED to assign'}, status=status.HTTP_400_BAD_REQUEST)
             
-        # Update State
-        stock_request.status = 'ASSIGNING'
-        stock_request.assignment_mode = 'AUTO'
-        stock_request.assignment_started_at = timezone.now()
-        stock_request.target_driver = None
-        stock_request.save()
+    #     # Update State
+    #     stock_request.status = 'ASSIGNING'
+    #     stock_request.assignment_mode = 'AUTO'
+    #     stock_request.assignment_started_at = timezone.now()
+    #     stock_request.target_driver = None
+    #     stock_request.save()
         
-        # TODO: Send FCM to all available drivers
-        # candidates = get_available_drivers(stock_request.dbs.parent_station.id)
-        # send_push_notification(candidates, ...)
+    #     # TODO: Send FCM to all available drivers
+    #     # candidates = get_available_drivers(stock_request.dbs.parent_station.id)
+    #     # send_push_notification(candidates, ...)
         
-        return Response({'status': 'assigning', 'mode': 'AUTO', 'message': 'Auto-push triggered'})
+    #     return Response({'status': 'assigning', 'mode': 'AUTO', 'message': 'Auto-push triggered'})
 
-    @action(detail=True, methods=['post'], url_path='assign-manual')
-    def assign_manual(self, request, pk=None):
-        """
-        Trigger Manual assignment to specific driver
-        """
-        if not check_eic_permission(request.user):
-            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-            
-        stock_request = self.get_object()
-        driver_id = request.data.get('driver_id')
+    # @action(detail=True, methods=['post'], url_path='assign-manual')
+    # def assign_manual(self, request, pk=None):
+    #     """
+    #     Assign a specific driver to the stock request.
         
-        if not driver_id:
-            return Response({'error': 'driver_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        if stock_request.status != 'APPROVED':
-            return Response({'error': 'Request must be APPROVED to assign'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        # Update State
-        stock_request.status = 'ASSIGNING'
-        stock_request.assignment_mode = 'MANUAL'
-        stock_request.assignment_started_at = timezone.now()
-        stock_request.target_driver_id = driver_id
-        stock_request.save()
+    #     POST /api/eic/stock-requests/{id}/assign-manual/
         
-        # TODO: Send FCM to target driver
+    #     Payload: {
+    #         "driver_id": 123
+    #     }
         
-        return Response({'status': 'assigning', 'mode': 'MANUAL', 'message': 'Manual assignment triggered'})
+    #     Sends FCM notification to the driver.
+    #     """
+    #     if not check_eic_permission(request.user):
+    #         return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+            
+    #     stock_request = self.get_object()
+    #     driver_id = request.data.get('driver_id')
+        
+    #     if not driver_id:
+    #         return Response({'error': 'driver_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+    #     if stock_request.status != 'APPROVED':
+    #         return Response({'error': 'Request must be APPROVED to assign'}, status=status.HTTP_400_BAD_REQUEST)
+        
+    #     # Get driver details
+    #     try:
+    #         driver = Driver.objects.select_related('user', 'assigned_vehicle').get(id=driver_id)
+    #     except Driver.DoesNotExist:
+    #         return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    #     # Verify driver is available (has active shift and not on trip)
+    #     now = timezone.now()
+    #     active_shift = Shift.objects.filter(
+    #         driver=driver,
+    #         status='APPROVED',
+    #         start_time__lte=now,
+    #         end_time__gte=now
+    #     ).first()
+        
+    #     if not active_shift:
+    #         return Response({
+    #             'error': 'Driver does not have an active shift'
+    #         }, status=status.HTTP_400_BAD_REQUEST)
+        
+    #     # Check if driver is on an active trip
+    #     active_trip = Trip.objects.filter(
+    #         driver=driver,
+    #         status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS']
+    #     ).exists()
+        
+    #     if active_trip:
+    #         return Response({
+    #             'error': 'Driver is currently on another trip'
+    #         }, status=status.HTTP_400_BAD_REQUEST)
+            
+    #     # Update State
+    #     stock_request.status = 'ASSIGNING'
+    #     stock_request.assignment_mode = 'MANUAL'
+    #     stock_request.assignment_started_at = timezone.now()
+    #     stock_request.target_driver_id = driver_id
+    #     stock_request.save()
+        
+    #     # Send FCM notification to driver
+    #     driver_notified = False
+    #     try:
+    #         from core.notification_service import NotificationService
+    #         notification_service = NotificationService()
+            
+    #         if driver.user:
+    #             notification_service.send_to_user(
+    #                 user=driver.user,
+    #                 title="New Trip Assignment",
+    #                 body=f"You have been assigned a trip to {stock_request.dbs.name}. Tap to accept or reject.",
+    #                 data={
+    #                     'type': 'TRIP_OFFER',
+    #                     'stock_request_id': stock_request.id,
+    #                     'dbs_name': stock_request.dbs.name,
+    #                     'dbs_id': stock_request.dbs.id,
+    #                     'quantity_kg': str(stock_request.requested_qty_kg),
+    #                     'priority': stock_request.priority_preview,
+    #                     'expires_in_seconds': '300'
+    #                 }
+    #             )
+    #             driver_notified = True
+    #     except Exception as e:
+    #         print(f"Notification error: {e}")
+        
+    #     return Response({
+    #         'success': True,
+    #         'status': 'assigning',
+    #         'mode': 'MANUAL',
+    #         'driver_id': driver_id,
+    #         'driver_name': driver.full_name,
+    #         'driver_phone': driver.phone,
+    #         'vehicle_no': active_shift.vehicle.registration_no,
+    #         'notification_sent': driver_notified,
+    #         'message': 'Driver has been notified. Waiting for confirmation.',
+    #         'expires_in_seconds': 300
+    #     })
 
 class EICDashboardView(views.APIView):
     """

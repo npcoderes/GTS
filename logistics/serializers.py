@@ -9,7 +9,6 @@ from core.models import User
 class VehicleSerializer(serializers.ModelSerializer):
     vendor_details = UserSerializer(source='vendor', read_only=True)
     ms_home_details = StationSerializer(source='ms_home', read_only=True)
-    vendor = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(user_roles__role__code='SGL_TRANSPORT_VENDOR'))
 
     class Meta:
         model = Vehicle
@@ -19,11 +18,49 @@ class DriverSerializer(serializers.ModelSerializer):
     vendor_details = UserSerializer(source='vendor', read_only=True)
     user_details = UserSerializer(source='user', read_only=True)
     assigned_vehicle_details = VehicleSerializer(source='assigned_vehicle', read_only=True)
-    vendor = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(user_roles__role__code='SGL_TRANSPORT_VENDOR'))
+    
+    email = serializers.EmailField(write_only=True, required=False)
+    password = serializers.CharField(write_only=True, required=False, style={'input_type': 'password'})
 
     class Meta:
         model = Driver
         fields = '__all__'
+        extra_kwargs = {
+            'user': {'read_only': True},
+            'vendor': {'required': False},
+        }
+
+    def create(self, validated_data):
+        email = validated_data.pop('email', None)
+        password = validated_data.pop('password', None)
+        
+        request = self.context.get('request')
+        if request and hasattr(request, 'user') and not validated_data.get('vendor'):
+            validated_data['vendor'] = request.user
+            
+        if not email or not password:
+            raise serializers.ValidationError("Email and Password are required for new driver.")
+            
+        from core.models import User, Role, UserRole
+        from django.db import transaction
+        
+        with transaction.atomic():
+            if User.objects.filter(email=email).exists():
+                raise serializers.ValidationError({"email": "User with this email already exists."})
+                
+            user = User.objects.create_user(
+                email=email, 
+                password=password, 
+                full_name=validated_data.get('full_name', '')
+            )
+            
+            role, _ = Role.objects.get_or_create(code='DRIVER', defaults={'name': 'Driver'})
+            UserRole.objects.create(user=user, role=role)
+            
+            validated_data['user'] = user
+            driver = super().create(validated_data)
+            
+        return driver
 
 class ShiftSerializer(serializers.ModelSerializer):
     driver_details = DriverSerializer(source='driver', read_only=True)
@@ -51,10 +88,11 @@ class EICStockRequestListSerializer(serializers.ModelSerializer):
     dbsId = serializers.SerializerMethodField()
     quantity = serializers.DecimalField(source='requested_qty_kg', max_digits=10, decimal_places=2)
     requestedAt = serializers.DateTimeField(source='created_at')
+    availableDrivers = serializers.SerializerMethodField()
     
     class Meta:
         model = StockRequest
-        fields = ['id', 'type', 'status', 'priority_preview', 'customer', 'dbsId', 'quantity', 'requestedAt']
+        fields = ['id', 'type', 'status', 'priority_preview', 'customer', 'dbsId', 'quantity', 'requestedAt', 'availableDrivers']
         
     def get_id(self, obj):
         return f"{obj.id}"
@@ -64,6 +102,37 @@ class EICStockRequestListSerializer(serializers.ModelSerializer):
         
     def get_dbsId(self, obj):
         return obj.dbs.name if obj.dbs else "Unknown"
+    
+    def get_availableDrivers(self, obj):
+        """Get available drivers for this stock request's MS"""
+        from .services import get_available_drivers
+        
+        # Only show available drivers for PENDING or APPROVED requests
+        if obj.status not in ['PENDING', 'APPROVED']:
+            return []
+        
+        # Get the parent MS of the DBS
+        if not obj.dbs or not obj.dbs.parent_station:
+            return []
+        
+        ms_id = obj.dbs.parent_station.id
+        available = get_available_drivers(ms_id)
+        
+        # Format driver details
+        drivers = []
+        for item in available:
+            driver = item['driver']
+            vehicle = item['vehicle']
+            drivers.append({
+                'driverId': driver.id,
+                'driverName': driver.full_name,
+                'driverPhone': driver.phone or '',
+                'vehicleId': vehicle.id,
+                'vehicleRegNo': vehicle.registration_no,
+                'tripCountToday': item['trip_count']
+            })
+        
+        return drivers
         
     def to_representation(self, instance):
         data = super().to_representation(instance)

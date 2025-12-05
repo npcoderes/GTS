@@ -16,8 +16,13 @@ class UserSerializer(serializers.ModelSerializer):
                   'is_active', 'is_staff', 'date_joined', 'password', 'roles']
         read_only_fields = ['date_joined']
         extra_kwargs = {
-            'password': {'write_only': True}
+            'password': {'write_only': True, 'required': False}
         }
+
+    def validate(self, data):
+        if self.instance is None and not data.get('password'):
+             raise serializers.ValidationError({"password": "Password is required for new users."})
+        return data
     
     def get_roles(self, obj):
         active_roles = UserRole.objects.filter(user=obj, active=True)

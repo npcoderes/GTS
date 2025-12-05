@@ -28,7 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-mypszu$nkz8mc9*n$knl$s(6xy)pas7_#7=(^wkt483e#t_00z')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
@@ -62,8 +62,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     # Custom logging middleware
-    'core.middleware.RequestLoggingMiddleware',
-    'core.middleware.AuthenticationLoggingMiddleware',
+    'backend.middleware.RequestLoggingMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -90,14 +89,11 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('POSTGRES_DB', 'gts'),
-        'USER': os.getenv('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.getenv('POSTGRES_PASSWORD', '1234'),
-        'HOST': os.getenv('POSTGRES_HOST', 'localhost'),
-        'PORT': os.getenv('POSTGRES_PORT', '5432'),
-    }
+ 'default': dj_database_url.config(
+        default=os.getenv("DATABASE_URL"),
+        conn_max_age=600,
+        ssl_require=True
+    )
 }   
 
 
@@ -177,7 +173,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Custom User Model
 AUTH_USER_MODEL = 'core.User'
 
-# Logging Configuration
+# Logging Configuration - Simplified to 3 files
 LOGS_DIR = BASE_DIR / 'logs'
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -185,28 +181,20 @@ LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
     'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} [{name}] {module} {process:d} {thread:d} - {message}',
-            'style': '{',
-            'datefmt': '%Y-%m-%d %H:%M:%S',
-        },
         'simple': {
             'format': '{levelname} {asctime} - {message}',
             'style': '{',
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
-        'detailed': {
-            'format': '{asctime} | {levelname:8s} | {name:20s} | {funcName:20s} | Line {lineno:4d} | {message}',
+        'request_format': {
+            'format': '{asctime} | {message}',
             'style': '{',
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
-    },
-    'filters': {
-        'require_debug_true': {
-            '()': 'django.utils.log.RequireDebugTrue',
-        },
-        'require_debug_false': {
-            '()': 'django.utils.log.RequireDebugFalse',
+        'error_format': {
+            'format': '{asctime} | {levelname} | {name} | {funcName}:{lineno} | {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
         },
     },
     'handlers': {
@@ -215,45 +203,13 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'simple',
         },
-        'file_all': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'app.log',
-            'maxBytes': 10485760,  # 10MB
-            'backupCount': 10,
-            'formatter': 'detailed',
-        },
         'file_info': {
             'level': 'INFO',
             'class': 'logging.handlers.RotatingFileHandler',
             'filename': LOGS_DIR / 'info.log',
             'maxBytes': 10485760,  # 10MB
             'backupCount': 5,
-            'formatter': 'verbose',
-        },
-        'file_error': {
-            'level': 'ERROR',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'error.log',
-            'maxBytes': 10485760,  # 10MB
-            'backupCount': 10,
-            'formatter': 'detailed',
-        },
-        'file_warning': {
-            'level': 'WARNING',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'warning.log',
-            'maxBytes': 5242880,  # 5MB
-            'backupCount': 5,
-            'formatter': 'verbose',
-        },
-        'file_debug': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'debug.log',
-            'maxBytes': 10485760,  # 10MB
-            'backupCount': 3,
-            'formatter': 'detailed',
+            'formatter': 'simple',
         },
         'file_requests': {
             'level': 'INFO',
@@ -261,71 +217,46 @@ LOGGING = {
             'filename': LOGS_DIR / 'requests.log',
             'maxBytes': 20971520,  # 20MB
             'backupCount': 10,
-            'formatter': 'verbose',
+            'formatter': 'request_format',
         },
-        'file_auth': {
-            'level': 'INFO',
+        'file_error': {
+            'level': 'WARNING',
             'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'auth.log',
-            'maxBytes': 5242880,  # 5MB
-            'backupCount': 10,
-            'formatter': 'detailed',
-        },
-        'file_database': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': LOGS_DIR / 'database.log',
+            'filename': LOGS_DIR / 'error.log',
             'maxBytes': 10485760,  # 10MB
-            'backupCount': 5,
-            'formatter': 'detailed',
+            'backupCount': 10,
+            'formatter': 'error_format',
         },
     },
     'loggers': {
-        # Django framework loggers
         'django': {
-            'handlers': ['console', 'file_all'],
+            'handlers': ['console', 'file_info'],
             'level': 'INFO',
             'propagate': False,
         },
         'django.request': {
-            'handlers': ['file_requests', 'file_error', 'console'],
+            'handlers': ['file_error'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'request_logger': {
+            'handlers': ['file_requests'],
             'level': 'INFO',
             'propagate': False,
         },
-        'django.server': {
-            'handlers': ['file_requests', 'console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'django.db.backends': {
-            'handlers': ['file_database'],
-            'level': 'WARNING',  # Set to DEBUG to see all SQL queries
-            'propagate': False,
-        },
-        'django.security': {
-            'handlers': ['file_auth', 'file_error'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        # Application loggers
         'core': {
-            'handlers': ['console', 'file_all', 'file_info', 'file_error', 'file_warning', 'file_debug'],
-            'level': 'DEBUG',
-            'propagate': False,
-        },
-        'auth': {
-            'handlers': ['file_auth', 'file_error', 'console'],
+            'handlers': ['console', 'file_info', 'file_error'],
             'level': 'INFO',
             'propagate': False,
         },
-        'api': {
-            'handlers': ['file_requests', 'file_error', 'console'],
+        'logistics': {
+            'handlers': ['console', 'file_info', 'file_error'],
             'level': 'INFO',
             'propagate': False,
         },
     },
     'root': {
-        'handlers': ['console', 'file_all', 'file_error'],
+        'handlers': ['console', 'file_info', 'file_error'],
         'level': 'INFO',
     },
 }

@@ -54,6 +54,15 @@ class NotificationService:
             from firebase_admin import credentials
             import os
             
+            # Check if Firebase app already exists
+            try:
+                self._firebase_app = firebase_admin.get_app()
+                logger.info("✅ Firebase app already initialized, reusing existing app")
+                return
+            except ValueError:
+                # App doesn't exist, continue with initialization
+                pass
+            
             # Try environment variables first (for Render deployment)
             firebase_private_key = os.getenv('FIREBASE_PRIVATE_KEY')
             if firebase_private_key:
@@ -106,24 +115,35 @@ class NotificationService:
         try:
             from firebase_admin import messaging
             
+            # Build data payload - merge custom data with defaults
+            message_data = {
+                'click_action': 'FLUTTER_NOTIFICATION_CLICK',
+            }
+            # Add notification_type only if not already in data
+            if data and 'type' in data:
+                message_data['type'] = data['type']
+            else:
+                message_data['type'] = notification_type
+            
+            # Merge all custom data
+            if data:
+                for key, value in data.items():
+                    message_data[key] = str(value) if value is not None else ''
+            
             # Build the message
             message = messaging.Message(
                 notification=messaging.Notification(
                     title=title,
                     body=body,
                 ),
-                data={
-                    'type': notification_type,
-                    'click_action': 'FLUTTER_NOTIFICATION_CLICK',
-                    **(data or {})
-                },
+                data=message_data,
                 token=token,
             )
             
             # Send the message
             response = messaging.send(message)
             
-            logger.info(f"FCM notification sent: {response}")
+            logger.info(f"FCM notification sent: {response}, data: {message_data}")
             return {'status': 'sent', 'message_id': response}
             
         except Exception as e:
