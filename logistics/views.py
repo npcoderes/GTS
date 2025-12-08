@@ -1,7 +1,9 @@
-from rest_framework import viewsets, status, views
+import logging
+from rest_framework import viewsets, status, views, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from .models import (
@@ -15,9 +17,11 @@ from .serializers import (
 )
 from core.models import Station, User
 
+logger = logging.getLogger(__name__)
+
 # --- Helper Functions ---
 def get_trip_by_token(token_id):
-    return get_object_or_404(Trip, token__id=token_id)
+    return get_object_or_404(Trip, token__token_no=token_id)
 
 # --- ViewSets ---
 
@@ -55,11 +59,55 @@ class StockRequestViewSet(viewsets.ModelViewSet):
         if not dbs and role_code == 'DBS_OPERATOR':
              raise serializers.ValidationError("DBS Operator must be assigned to a station")
 
-        serializer.save(
+        stock_request = serializer.save(
             requested_by_user=user,
             source=source,
             dbs=dbs
         )
+
+        # Notify EIC users of parent MS when a DBS operator raises a request
+        try:
+            if role_code == 'DBS_OPERATOR' and dbs and dbs.parent_station:
+                from core.models import UserRole
+                from core.notification_service import NotificationService
+
+                eic_roles = UserRole.objects.filter(
+                    role__code='EIC', active=True, station=dbs.parent_station
+                ).select_related('user')
+
+                if eic_roles:
+                    notifier = NotificationService()
+                    ms_name = dbs.parent_station.name or ''
+                    dbs_name = dbs.name or ''
+                    for eic_role in eic_roles:
+                        if eic_role.user:
+                            logger.info(
+                                "Sending stock request notification to EIC user",
+                                extra={
+                                    'eic_user_id': eic_role.user.id,
+                                    'eic_user_email': eic_role.user.email,
+                                    'stock_request_id': stock_request.id,
+                                    'dbs_id': getattr(dbs, 'id', None),
+                                    'ms_id': getattr(dbs.parent_station, 'id', None)
+                                }
+                            )
+                            notifier.send_to_user(
+                                user=eic_role.user,
+                                title="New Stock Request",
+                                body=f"{dbs_name} requested stock from {ms_name}.",
+                                data={
+                                    'type': 'STOCK_REQUEST',
+                                    'stockRequestId': str(stock_request.id),
+                                    'dbsId': dbs.code if hasattr(dbs, 'code') else None,
+                                    'dbsName': dbs_name,
+                                    'msId': dbs.parent_station.code if hasattr(dbs.parent_station, 'code') else None,
+                                    'msName': ms_name,
+                                },
+                                notification_type='stock_request'
+                            )
+        except Exception:
+            # Do not block creation on notification issues
+            pass
 
 class TripViewSet(viewsets.ModelViewSet):
     queryset = Trip.objects.all()
@@ -81,23 +129,7 @@ class TripViewSet(viewsets.ModelViewSet):
             
         return queryset.order_by('-id')
 
-    @action(detail=True, methods=['post'])
-    def accept(self, request, pk=None):
-        trip = self.get_object()
-        driver_id = request.data.get('driverId')
-        if driver_id:
-            driver = get_object_or_404(Driver, id=driver_id)
-            trip.driver = driver
-        trip.status = 'PENDING'
-        trip.save()
-        return Response({'status': 'accepted'})
 
-    @action(detail=True, methods=['post'])
-    def reject(self, request, pk=None):
-        trip = self.get_object()
-        trip.status = 'CANCELLED'
-        trip.save()
-        return Response({'status': 'rejected'})
 
     @action(detail=False, methods=['get'])
     def status(self, request):
@@ -155,28 +187,68 @@ class ShiftViewSet(viewsets.ModelViewSet):
         start_time = request.data.get('start_time')
         end_time = request.data.get('end_time')
         
+
         if driver_id and start_time and end_time:
-            # Check for overlapping shifts for the same driver
-            # A shift overlaps if: existing.start < new.end AND existing.end > new.start
-            overlapping_shifts = Shift.objects.filter(
+            # 1. Check against One-time shifts (Standard overlap)
+            overlapping_onetime = Shift.objects.filter(
                 driver_id=driver_id,
-                status__in=['PENDING', 'APPROVED'],  # Only check active shifts
+                status__in=['PENDING', 'APPROVED'], 
                 start_time__lt=end_time,
-                end_time__gt=start_time
+                end_time__gt=start_time,
+                is_recurring=False
             )
             
-            if overlapping_shifts.exists():
-                overlap = overlapping_shifts.first()
+            if overlapping_onetime.exists():
+                overlap = overlapping_onetime.first()
                 return Response({
                     'error': 'Overlapping shift exists',
-                    'message': f'Driver already has a shift from {overlap.start_time.strftime("%Y-%m-%d %H:%M")} to {overlap.end_time.strftime("%Y-%m-%d %H:%M")}',
+                    'message': f'Driver already has a one-time shift from {overlap.start_time.strftime("%Y-%m-%d %H:%M")} to {overlap.end_time.strftime("%Y-%m-%d %H:%M")}',
                     'existing_shift_id': overlap.id
                 }, status=status.HTTP_400_BAD_REQUEST)
-        
+
+            # 2. Check against Recurring shifts (Time-of-day overlap)
+            # Fetch all active recurring shifts for driver
+            existing_recurring = Shift.objects.filter(
+                driver_id=driver_id,
+                status__in=['PENDING', 'APPROVED'],
+                is_recurring=True
+            )
+            
+            new_start_time = start_time.time() if hasattr(start_time, 'time') else parse_datetime(start_time).time()
+            new_end_time = end_time.time() if hasattr(end_time, 'time') else parse_datetime(end_time).time()
+            
+            for shift in existing_recurring:
+                exist_start = shift.start_time.time()
+                exist_end = shift.end_time.time()
+                
+                # Check time overlap
+                overlap = False
+                if exist_start <= exist_end:
+                    if new_start_time < exist_end and new_end_time > exist_start:
+                        overlap = True
+                else: # Overnight
+                    # Simplified overnight check: if ranges touch
+                    overlap = True # Assume conflict for safety with overnight recurring
+                
+                if overlap:
+                     return Response({
+                        'error': 'Overlapping recurring shift',
+                        'message': f'Driver has a daily shift from {shift.start_time.strftime("%H:%M")} to {shift.end_time.strftime("%H:%M")}',
+                        'existing_shift_id': shift.id
+                    }, status=status.HTTP_400_BAD_REQUEST)
+             
         # Set created_by to current user
+        # Extract recurring flags from request
+        is_recurring = request.data.get('is_recurring', False)
+        recurrence_pattern = request.data.get('recurrence_pattern', 'NONE')
+        
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        shift = serializer.save(created_by=request.user)
+        shift = serializer.save(
+            created_by=request.user,
+            is_recurring=is_recurring,
+            recurrence_pattern=recurrence_pattern
+        )
         
         # Return success with clear message
         return Response({
@@ -201,6 +273,16 @@ class ShiftViewSet(viewsets.ModelViewSet):
         shift = self.get_object()
         shift.status = 'APPROVED'
         shift.approved_by = request.user
+        shift.rejection_reason = None
+        # On approval, mark driver trained and license verified
+        try:
+            driver = shift.driver
+            if driver:
+                driver.trained = True
+                driver.license_verified = True
+                driver.save(update_fields=['trained', 'license_verified'])
+        except Exception:
+            pass
         shift.save()
         return Response({'status': 'approved'})
 
@@ -213,10 +295,16 @@ class ShiftViewSet(viewsets.ModelViewSet):
             )
         
         shift = self.get_object()
+        reason = request.data.get('reason', '').strip()
         shift.status = 'REJECTED'
         shift.approved_by = request.user
+        shift.rejection_reason = reason or 'No reason provided'
         shift.save()
-        return Response({'status': 'rejected'})
+        return Response({
+            'status': 'rejected',
+            'reason': shift.rejection_reason,
+            'shift_id': shift.id
+        })
 
 class VehicleViewSet(viewsets.ModelViewSet):
     queryset = Vehicle.objects.all()
@@ -248,7 +336,40 @@ class DriverArrivalDBSView(views.APIView):
 
 class MeterReadingConfirmationView(views.APIView):
     def post(self, request):
-        return Response({'status': 'confirmed'})
+        token_id = request.data.get('token')
+        reading_value = request.data.get('reading')
+        reading_type = request.data.get('type') # PRE_FILL_MFM, POST_FILL_MFM, PRE_DEC_PRESSURE, POST_DEC_PRESSURE
+        
+        trip = get_trip_by_token(token_id)
+        
+        if not reading_value or not reading_type:
+            return Response({'error': 'Missing reading or type'}, status=400)
+            
+        try:
+            val = float(reading_value)
+        except ValueError:
+            return Response({'error': 'Invalid reading value'}, status=400)
+
+        if reading_type == 'PRE_FILL_MFM':
+             filling, _ = MSFilling.objects.get_or_create(trip=trip)
+             filling.prefill_mfm = val
+             filling.save()
+        elif reading_type == 'POST_FILL_MFM':
+             filling, _ = MSFilling.objects.get_or_create(trip=trip)
+             filling.postfill_mfm = val
+             filling.save()
+        elif reading_type == 'PRE_DEC_PRESSURE':
+             decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+             decanting.pre_dec_pressure_bar = val
+             decanting.save()
+        elif reading_type == 'POST_DEC_PRESSURE':
+             decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+             decanting.post_dec_pressure_bar = val
+             decanting.save()
+        else:
+            return Response({'error': 'Invalid reading type'}, status=400)
+            
+        return Response({'status': 'confirmed', 'updated': reading_type})
 
 class TripCompleteView(views.APIView):
     def post(self, request):
@@ -288,238 +409,9 @@ class MSConfirmArrivalView(views.APIView):
         trip.save()
         return Response({'status': 'confirmed'})
 
-class MSPreReadingView(views.APIView):
-    def post(self, request):
-        session_id = request.data.get('sessionId') 
-        reading = request.data.get('reading')
-        trip = get_object_or_404(Trip, id=session_id)
-        
-        filling, created = MSFilling.objects.get_or_create(trip=trip)
-        filling.start_time = timezone.now()
-        filling.prefill_pressure_bar = reading.get('pressure')
-        filling.prefill_mfm = reading.get('mfm')
-        filling.save()
-        
-        return Response({'status': 'saved'})
 
-class MSPostReadingView(views.APIView):
-    def post(self, request):
-        session_id = request.data.get('sessionId')
-        reading = request.data.get('reading')
-        
-        trip = get_object_or_404(Trip, id=session_id)
-        filling = get_object_or_404(MSFilling, trip=trip)
-        
-        filling.end_time = timezone.now()
-        filling.postfill_pressure_bar = reading.get('pressure')
-        filling.postfill_mfm = reading.get('mfm')
-        
-        if filling.prefill_mfm and filling.postfill_mfm:
-            filling.filled_qty_kg = float(filling.postfill_mfm) - float(filling.prefill_mfm)
-            
-        filling.save()
-        
-        return Response({'status': 'saved', 'filled_qty': filling.filled_qty_kg})
-
-class MSConfirmSAPView(views.APIView):
-    def post(self, request):
-        session_id = request.data.get('sessionId')
-        trip = get_object_or_404(Trip, id=session_id)
-        
-        trip.status = 'IN_TRANSIT'
-        trip.dbs_departure_at = timezone.now()
-        trip.save()
-        
-        return Response({'status': 'posted', 'sto_number': f'STO-{trip.id}-MOCK'})
 
 # --- DBS Operations ---
 
-class DBSDecantArriveView(views.APIView):
-    """
-    POST /dbs/decant/arrive
-    DBS operator confirms truck arrival at DBS station.
-    Request: { token: "TOKEN-ID" }
-    Response: { trip: {...}, status: "confirmed" }
-    """
-    def post(self, request):
-        token_id = request.data.get('token')
-        trip = get_trip_by_token(token_id)
-        trip.status = 'AT_DBS'
-        trip.dbs_arrival_at = timezone.now()
-        trip.save()
-        
-        return Response({
-            'status': 'confirmed',
-            'trip': {
-                'id': trip.id,
-                'status': trip.status,
-                'msName': trip.ms.name if trip.ms else None,
-                'dbsName': trip.dbs.name if trip.dbs else None,
-                'vehicleNo': trip.vehicle.registration_no if trip.vehicle else None,
-                'driverName': trip.driver.full_name if trip.driver else None,
-                'arrivedAt': trip.dbs_arrival_at.isoformat() if trip.dbs_arrival_at else None
-            }
-        })
 
-class DBSDecantPreView(views.APIView):
-    """
-    POST /dbs/decant/pre
-    Gets or fetches pre-decant metrics from SCADA/manual input.
-    Request: { token: "TOKEN-ID", reading: {pressure, mfm} } (optional reading for manual input)
-    Response: { pressure, flow, mfm, status }
-    """
-    def post(self, request):
-        token_id = request.data.get('token')
-        reading = request.data.get('reading', {})
-        trip = get_trip_by_token(token_id)
-        
-        decanting, created = DBSDecanting.objects.get_or_create(trip=trip)
-        
-        # If manual reading provided, save it
-        if reading:
-            decanting.start_time = timezone.now()
-            if 'mfm' in reading:
-                decanting.pre_dec_reading = reading['mfm']
-            decanting.save()
-        
-        # Get MS filling data (what was filled at MS)
-        ms_filling = MSFilling.objects.filter(trip=trip).first()
-        post_fill_pressure = float(ms_filling.postfill_pressure_bar) if ms_filling and ms_filling.postfill_pressure_bar else 250.0
-        filled_qty = float(ms_filling.filled_qty_kg) if ms_filling and ms_filling.filled_qty_kg else 500.0
-        
-        # Return pre-decant metrics (simulated SCADA data for now)
-        return Response({
-            'status': 'ready',
-            'pressure': f"{post_fill_pressure:.1f} bar",  # Pressure should be high before decanting
-            'flow': "0.0 kg/min",  # No flow yet
-            'mfm': f"{filled_qty:.2f} kg",  # MFM shows filled quantity
-            'tripId': trip.id,
-            'vehicleNo': trip.vehicle.registration_no if trip.vehicle else None
-        })
-
-class DBSDecantStartView(views.APIView):
-    """
-    POST /dbs/decant/start
-    Starts the decanting process - records start time.
-    Request: { token: "TOKEN-ID" }
-    Response: { status, startTime }
-    """
-    def post(self, request):
-        token_id = request.data.get('token')
-        trip = get_trip_by_token(token_id)
-        
-        # Update trip status
-        trip.status = 'DECANTING_STARTED'
-        trip.save()
-        
-        # Create or update decanting record
-        decanting, created = DBSDecanting.objects.get_or_create(trip=trip)
-        decanting.start_time = timezone.now()
-        decanting.save()
-        
-        return Response({
-            'status': 'started',
-            'startTime': decanting.start_time.isoformat(),
-            'tripId': trip.id
-        })
-
-class DBSDecantEndView(views.APIView):
-    """
-    POST /dbs/decant/end
-    Ends the decanting process - records end metrics.
-    Request: { token: "TOKEN-ID" }
-    Response: { pressure, flow, mfm, endTime, deliveredQty }
-    """
-    def post(self, request):
-        token_id = request.data.get('token')
-        trip = get_trip_by_token(token_id)
-        
-        # Update trip status
-        trip.status = 'DECANTING_COMPLETED'
-        trip.save()
-        
-        # Update decanting record
-        decanting, created = DBSDecanting.objects.get_or_create(trip=trip)
-        decanting.end_time = timezone.now()
-        
-        # Get MS filling data
-        ms_filling = MSFilling.objects.filter(trip=trip).first()
-        filled_qty = float(ms_filling.filled_qty_kg) if ms_filling and ms_filling.filled_qty_kg else 500.0
-        
-        # Simulate post-decant metrics (after gas transferred to DBS storage)
-        post_pressure = 15.0  # Low pressure after decanting
-        delivered_qty = filled_qty * 0.997  # 0.3% typical loss
-        
-        decanting.post_dec_reading = post_pressure
-        decanting.delivered_qty_kg = delivered_qty
-        decanting.save()
-        
-        return Response({
-            'status': 'ended',
-            'pressure': f"{post_pressure:.1f} bar",
-            'flow': "0.0 kg/min",  # Flow stopped
-            'mfm': f"{delivered_qty:.2f} kg",
-            'endTime': decanting.end_time.isoformat(),
-            'deliveredQty': delivered_qty,
-            'tripId': trip.id
-        })
-
-class DBSDecantConfirmView(views.APIView):
-    """
-    POST /dbs/decant/confirm
-    Confirms delivery, performs reconciliation, closes STO.
-    Request: { token, deliveredQty, operatorAck, driverAck }
-    Response: { status, reconciliation, tripId }
-    """
-    def post(self, request):
-        token_id = request.data.get('token')
-        payload = request.data
-        trip = get_trip_by_token(token_id)
-        
-        decanting, created = DBSDecanting.objects.get_or_create(trip=trip)
-        decanting.end_time = decanting.end_time or timezone.now()
-        decanting.post_dec_reading = payload.get('finalReading')
-        decanting.delivered_qty_kg = payload.get('deliveredQty')
-        
-        # Store acknowledgments
-        if payload.get('operatorAck'):
-            decanting.confirmed_by_dbs_operator = request.user if request.user.is_authenticated else None
-        if payload.get('driverAck'):
-            decanting.confirmed_by_driver = trip.driver.user if trip.driver and trip.driver.user else None
-            
-        decanting.save()
-        
-        ms_filling = MSFilling.objects.filter(trip=trip).first()
-        ms_qty = float(ms_filling.filled_qty_kg) if ms_filling and ms_filling.filled_qty_kg else 0
-        dbs_qty = float(decanting.delivered_qty_kg or 0)
-        
-        diff = ms_qty - dbs_qty
-        variance = (diff / ms_qty) * 100 if ms_qty > 0 else 0
-        
-        recon = Reconciliation.objects.create(
-            trip=trip,
-            ms_filled_qty_kg=ms_qty,
-            dbs_delivered_qty_kg=dbs_qty,
-            diff_qty=diff,
-            variance_pct=variance,
-            status='ALERT' if abs(variance) > 0.5 else 'OK'
-        )
-        
-        trip.status = 'COMPLETED'
-        trip.dbs_departure_at = timezone.now()
-        trip.completed_at = timezone.now()
-        trip.save()
-        
-        return Response({
-            'status': 'confirmed',
-            'tripId': trip.id,
-            'reconciliation': {
-                'msFilled': ms_qty,
-                'dbsDelivered': dbs_qty,
-                'difference': diff,
-                'variancePct': round(variance, 2),
-                'reconStatus': recon.status
-            },
-            'stoNumber': trip.sto_number
-        })
 

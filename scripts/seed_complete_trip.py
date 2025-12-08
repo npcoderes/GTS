@@ -38,7 +38,7 @@ def create_complete_trip():
         vehicle = Vehicle.objects.first()
         
         if not ms:
-            print("❌ No MS station found! Creating one...")
+            print("[ERROR] No MS station found! Creating one...")
             ms = Station.objects.create(
                 type='MS',
                 code='MS001',
@@ -51,7 +51,7 @@ def create_complete_trip():
             )
         
         if not dbs:
-            print("❌ No DBS station found! Creating one...")
+            print("[ERROR] No DBS station found! Creating one...")
             dbs = Station.objects.create(
                 type='DBS',
                 code='DBS001',
@@ -65,19 +65,19 @@ def create_complete_trip():
             )
         
         if not vehicle:
-            print("❌ No vehicle found! Creating one...")
+            print("[ERROR] No vehicle found! Creating one...")
             vehicle = Vehicle.objects.create(
                 registration_no='GJ-01-CNG-1234',
                 capacity_kg=Decimal('1500.00'),
                 active=True
             )
         
-        print(f"✅ Using MS: {ms.name} (ID: {ms.id})")
-        print(f"✅ Using DBS: {dbs.name} (ID: {dbs.id})")
-        print(f"✅ Using Vehicle: {vehicle.registration_no} (ID: {vehicle.id})")
+        print(f"[OK] Using MS: {ms.name} (ID: {ms.id})")
+        print(f"[OK] Using DBS: {dbs.name} (ID: {dbs.id})")
+        print(f"[OK] Using Vehicle: {vehicle.registration_no} (ID: {vehicle.id})")
         
     except Exception as e:
-        print(f"❌ Error getting/creating base data: {e}")
+        print(f"[ERROR] Error getting/creating base data: {e}")
         return
     
     # Get or create DBS operator user
@@ -89,7 +89,7 @@ def create_complete_trip():
             'is_active': True
         }
     )
-    print(f"✅ DBS Operator: {dbs_operator.full_name}")
+    print(f"[OK] DBS Operator: {dbs_operator.full_name}")
     
     # Get or create vendor user  
     vendor_user, _ = User.objects.get_or_create(
@@ -127,7 +127,7 @@ def create_complete_trip():
     if not created and driver.user is None:
         driver.user = driver_user
         driver.save()
-    print(f"✅ Driver: {driver.full_name}")
+    print(f"[OK] Driver: {driver.full_name}")
     
     # Create shift for driver
     now = timezone.now()
@@ -140,7 +140,7 @@ def create_complete_trip():
             'status': 'APPROVED'
         }
     )
-    print(f"✅ Shift: {shift.start_time.date()} ({shift.status})")
+    print(f"[OK] Shift: {shift.start_time.date()} ({shift.status})")
     
     # ============================================================
     # STEP 1: DBS Operator raises Manual Stock Request
@@ -166,7 +166,7 @@ def create_complete_trip():
         requested_by_time=now.time(),
         approval_notes='Approved by EIC - Urgent refill needed'
     )
-    print(f"✅ Stock Request #{stock_request.id} created")
+    print(f"[OK] Stock Request #{stock_request.id} created")
     print(f"   Source: {stock_request.source}")
     print(f"   Status: {stock_request.status}")
     print(f"   Requested Qty: {stock_request.requested_qty_kg} kg")
@@ -185,7 +185,7 @@ def create_complete_trip():
         sequence_no=1,
         issued_at=now - timedelta(hours=3)
     )
-    print(f"✅ Token #{token.id} issued (Seq: {token.sequence_no})")
+    print(f"[OK] Token #{token.id} issued (Seq: {token.sequence_no})")
     
     # ============================================================
     # STEP 3: Trip created and assigned to driver
@@ -212,7 +212,7 @@ def create_complete_trip():
         rtkm_km=Decimal('45.5'),
         route_deviation=False
     )
-    print(f"✅ Trip #{trip.id} created")
+    print(f"[OK] Trip #{trip.id} created")
     print(f"   Route: {ms.name} → {dbs.name}")
     print(f"   STO: {trip.sto_number}")
     print(f"   Status: {trip.status}")
@@ -233,7 +233,7 @@ def create_complete_trip():
         filled_qty_kg=Decimal('500.00'),
         confirmed_by_driver=driver_user
     )
-    print(f"✅ MS Filling #{ms_filling.id} recorded")
+    print(f"[OK] MS Filling #{ms_filling.id} recorded")
     print(f"   Pre-fill Pressure: {ms_filling.prefill_pressure_bar} bar")
     print(f"   Post-fill Pressure: {ms_filling.postfill_pressure_bar} bar")
     print(f"   Filled Qty: {ms_filling.filled_qty_kg} kg")
@@ -255,7 +255,7 @@ def create_complete_trip():
         confirmed_by_dbs_operator=dbs_operator,
         confirmed_by_driver=driver_user
     )
-    print(f"✅ DBS Decanting #{dbs_decanting.id} recorded")
+    print(f"[OK] DBS Decanting #{dbs_decanting.id} recorded")
     print(f"   Pre-dec Reading: {dbs_decanting.pre_dec_reading}")
     print(f"   Post-dec Reading: {dbs_decanting.post_dec_reading}")
     print(f"   Delivered Qty: {dbs_decanting.delivered_qty_kg} kg")
@@ -294,7 +294,7 @@ Quantities:
 - Delivered at DBS: {dbs_decanting.delivered_qty_kg} kg
 - Variance: {variance} kg ({variance_pct:.2f}%)
 
-Status: ✅ COMPLETED
+Status: [OK] COMPLETED
 """)
     
     return trip
@@ -325,11 +325,11 @@ def create_cancelled_trip():
             started_at=timezone.now(),
             ended_at=timezone.now()
         )
-        print(f'✅ Created CANCELLED trip: ID={trip.id}')
+        print(f'[OK] Created CANCELLED trip: ID={trip.id}')
         print(f'   Route: {ms.name} → {dbs.name}')
         return trip
     else:
-        print('❌ Missing required data: MS, DBS, or Vehicle')
+        print('[ERROR] Missing required data: MS, DBS, or Vehicle')
         return None
 
 

@@ -62,7 +62,8 @@ def get_user_permissions(role_code):
         permissions.update({
             'can_approve_request': True,
             'can_manage_drivers': True,
-            'can_override_tokens': True
+            'can_override_tokens': True,
+            'can_manage_clusters': True,
         })
     elif role_code == 'VENDOR':
         permissions.update({

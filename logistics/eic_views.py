@@ -142,12 +142,8 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                         
                         # Verify driver is available (has active shift and not on trip)
                         now = timezone.now()
-                        active_shift = Shift.objects.filter(
-                            driver=driver,
-                            status='APPROVED',
-                            start_time__lte=now,
-                            end_time__gte=now
-                        ).first()
+                        from .services import find_active_shift
+                        active_shift = find_active_shift(driver, now)
                         
                         if not active_shift:
                             return Response({
@@ -569,15 +565,32 @@ class EICDriverApprovalView(views.APIView):
         
         # Get pending shifts with driver and vehicle details
         pending_shifts = Shift.objects.select_related(
-            'driver', 'vehicle', 'created_by', 'driver__vendor', 'driver__user'
-        ).filter(status='PENDING').order_by('created_at')
+            'driver', 'vehicle', 'created_by'
+        ).filter(status__in=['PENDING']).order_by('created_at')
         
         pending_list = []
         for shift in pending_shifts:
             driver = shift.driver
+
+            # Normalize datetimes to target display timezone (default IST +05:30)
+            def _local_dt(dt):
+                if not dt:
+                    return None
+                display_tz = timezone.get_fixed_timezone(330)  # minutes offset
+                try:
+                    aware = dt
+                    if timezone.is_naive(aware):
+                        aware = timezone.make_aware(aware, timezone.utc)
+                    return aware.astimezone(display_tz)
+                except Exception:
+                    return dt
+
+            local_start = _local_dt(shift.start_time)
+            local_end = _local_dt(shift.end_time)
+            local_created = _local_dt(shift.created_at)
             
             # Determine preferred shift based on time
-            start_hour = shift.start_time.hour if shift.start_time else 8
+            start_hour = local_start.hour if local_start else 8
             if start_hour < 12:
                 preferred_shift = "Morning"
             elif start_hour < 17:
@@ -592,20 +605,22 @@ class EICDriverApprovalView(views.APIView):
                 'licenseNumber': driver.license_no or '',
                 'licenseExpiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
                 'preferredShift': preferred_shift,
-                'requestedShiftStart': shift.start_time.strftime('%H:%M') if shift.start_time else '08:00',
-                'requestedShiftEnd': shift.end_time.strftime('%H:%M') if shift.end_time else '16:00',
+                'requestedShiftStart': local_start.strftime('%H:%M') if local_start else '08:00',
+                'requestedShiftEnd': local_end.strftime('%H:%M') if local_end else '16:00',
                 'trainingCompleted': driver.trained,
+                'trainingVerified': driver.trained,
+                'licenseVerified': driver.license_verified,
                 'trainingModules': [],  # Not implemented yet
                 'remarks': '',
                 'documents': None,  # Currently null as requested
                 
                 # Additional useful fields
                 'shiftId': shift.id,
-                'shiftDate': shift.start_time.strftime('%Y-%m-%d') if shift.start_time else None,
+                'shiftDate': local_start.strftime('%Y-%m-%d') if local_start else None,
                 'vehicleNumber': shift.vehicle.registration_no if shift.vehicle else None,
                 'vehicleCapacity': float(shift.vehicle.capacity_kg) if shift.vehicle else None,
                 'createdBy': shift.created_by.get_full_name() if shift.created_by else 'System',
-                'createdAt': shift.created_at.isoformat() if shift.created_at else None
+                'createdAt': local_created.isoformat() if local_created else None
             })
         
         return Response({

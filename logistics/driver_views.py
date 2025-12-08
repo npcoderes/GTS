@@ -6,7 +6,9 @@ from django.utils import timezone
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from .models import StockRequest, Trip, Shift, Token
-
+import json
+import logging 
+logger = logging.getLogger(__name__)
 class DriverTripViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -57,27 +59,32 @@ class DriverTripViewSet(viewsets.ViewSet):
                     }, status=status.HTTP_403_FORBIDDEN)
                     
                 # 4. Find driver's active shift for vehicle
-                active_shift = Shift.objects.filter(
-                    driver=driver, 
-                    status='APPROVED',
-                    start_time__lte=timezone.now(),
-                    end_time__gte=timezone.now()
-                ).first()
+                from .services import find_active_shift
+                active_shift = find_active_shift(driver, timezone.now())
+                
+                # Was:
+                # active_shift = Shift.objects.filter(
+                #    driver=driver, 
+                #    status='APPROVED',
+                #    start_time__lte=timezone.now(),
+                #    end_time__gte=timezone.now()
+                # ).first()
+                
+                # Note: find_active_shift handles both one-time and recurring
                 
                 if not active_shift:
                     return Response({
                         'error': 'No active shift found. Please ensure you have an approved shift.'
                     }, status=status.HTTP_400_BAD_REQUEST)
 
-                # 5. Create Token
+                # 5. Create Token (Refactored to token_no hash)
                 ms = stock_req.dbs.parent_station
-                last_token = Token.objects.filter(ms=ms).order_by('-sequence_no').first()
-                sequence_no = (last_token.sequence_no + 1) if last_token else 1
+                # sequence_no removed in favor of hashed unique code
                 
                 token = Token.objects.create(
                     vehicle=active_shift.vehicle,
                     ms=ms,
-                    sequence_no=sequence_no
+                    # token_no auto-generated
                 )
                 
                 # 6. Create Trip
@@ -112,25 +119,54 @@ class DriverTripViewSet(viewsets.ViewSet):
                         notification_service.send_to_user(
                             user=dbs_operator_role.user,
                             title="Driver Assigned",
-                            body=f"Token #{token.sequence_no} - Driver: {driver.full_name}, Vehicle: {active_shift.vehicle.registration_no}",
+                            body=f"Token #{token.token_no} - Driver: {driver.full_name}, Vehicle: {active_shift.vehicle.registration_no}",
                             data={
                                 'type': 'DRIVER_ASSIGNED',
                                 'trip_id': trip.id,
-                                'token_number': token.sequence_no,
+                                'token_number': token.token_no,
                                 'driver_name': driver.full_name,
                                 'vehicle_no': active_shift.vehicle.registration_no
                             }
                         )
+                        
+                        
+                    # Notify EIC Operators (specific to the MS of the DBS)
+                    from core.models import User, UserRole
+                    ms = stock_req.dbs.parent_station if stock_req.dbs else None
+                    if ms:
+                        eic_roles = UserRole.objects.filter(
+                            station=ms,
+                            role__code='EIC',
+                            active=True
+                        )
+                        for eic_role in eic_roles:
+                            if eic_role.user:
+                                notification_service.send_to_user(
+                                    user=eic_role.user,
+                                    title="Trip Accepted",
+                                    body=f"Driver {driver.full_name} accepted trip to {stock_req.dbs.name}. Token: {token.token_no}",
+                                    data={
+                                        'type': 'TRIP_ACCEPTED',
+                                        'trip_id': str(trip.id),
+                                        'driver_id': str(driver.id),
+                                        'token_number': str(token.token_no),
+                                        'dbs_name': str(stock_req.dbs.name)
+                                    }
+                                )
                 except Exception as e:
                     print(f"Notification error: {e}")
-                
-                return Response({
+
+                response_data = {
                     'success': True,
                     'status': 'accepted',
                     'trip_id': trip.id,
-                    'token_number': token.sequence_no,
+                    'token_number': token.token_no,
                     'message': 'Trip accepted successfully'
-                })
+                }
+
+                logger.info("Trip Accept Response:\n" + json.dumps(response_data, indent=4))
+
+                return Response(response_data)
                 
         except StockRequest.DoesNotExist:
             return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -231,11 +267,233 @@ class DriverTripViewSet(viewsets.ViewSet):
                     'status': 'rejected',
                     'message': 'Trip rejected. EIC has been notified to assign another driver.'
                 })
-                
+
         except StockRequest.DoesNotExist:
             return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='arrival/ms')
+    def arrival_at_ms(self, request):   # app arivead at ms app 
+        """
+        Confirm arrival at Mother Station.
+        Payload: { "token": "TRIP_TOKEN_XYZ" }
+        """
+        driver = getattr(request.user, 'driver_profile', None)
+        if not driver:
+            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            
+        token_val = request.data.get('token')
+        if not token_val:
+            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            # Find trip by token
+            trip = Trip.objects.select_related('token', 'vehicle', 'dbs').get(
+                driver=driver,
+                token__token_no=token_val,
+                status__in=['PENDING', 'AT_MS'] # Allow idempotent retry
+            )
+            
+            if trip.status == 'PENDING':
+                trip.status = 'AT_MS'
+                trip.ms_arrival_at = timezone.now() 
+                trip.save()
+                
+                # Notify MS Operator
+                try:
+                    from core.notification_service import NotificationService
+                    from core.models import UserRole
+                    notification_service = NotificationService()
+                    
+                    # Find MS Operator
+                    ms_operator_role = UserRole.objects.filter(
+                        station=trip.ms,
+                        role__code='MS_OPERATOR',
+                        active=True
+                    ).first()
+                    
+                    if ms_operator_role and ms_operator_role.user:
+                        notification_service.send_to_user(
+                            user=ms_operator_role.user,
+                            title="Truck Arrived",
+                            body=f"Truck {trip.vehicle.registration_no} has arrived at {trip.ms.name}",
+                            data={
+                                "type": "ms_arrival",
+                                "tripId": f"{trip.id}",
+                                "driverId": str(driver.id),
+                                "truckNumber": trip.vehicle.registration_no,
+                                "tripToken": trip.token.token_no if trip.token else ""
+                            }
+                        )
+                except Exception as e:
+                    print(f"Error sending MS arrival notification: {e}")
+            
+            return Response({
+                "success": True, 
+                "message": "Arrival confirmed"
+            })
+        except Trip.DoesNotExist:
+            return Response({'error': 'Active trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['post'], url_path='arrival/dbs')
+    def arrival_at_dbs(self, request):
+        """
+        Confirm arrival at Daughter Booster Station.
+        Payload: { "token": "TRIP_TOKEN_XYZ" }
+        """
+        driver = getattr(request.user, 'driver_profile', None)
+        if not driver:
+             return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+             
+        token_val = request.data.get('token')
+        if not token_val:
+            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            trip = Trip.objects.select_related('token', 'vehicle', 'dbs').get(
+                driver=driver,
+                token__token_no=token_val,
+                status__in=['IN_TRANSIT', 'AT_DBS','DISPATCHED']
+            )
+            
+            # Update status if not already
+            if trip.status == 'IN_TRANSIT' or trip.status == 'DISPATCHED':
+                trip.status = 'AT_DBS'
+                trip.dbs_arrival_at = timezone.now()
+                trip.save()
+                
+                # Send Notification to DBS Operator
+                try:
+                    from core.notification_service import NotificationService
+                    from core.models import UserRole
+                    notification_service = NotificationService()
+                    
+                    # Find DBS Operator
+                    dbs_operator_role = UserRole.objects.filter(
+                        station=trip.dbs,
+                        role__code='DBS_OPERATOR',
+                        active=True
+                    ).first()
+                    
+                    if dbs_operator_role and dbs_operator_role.user:
+                         notification_service.send_to_user(
+                            user=dbs_operator_role.user,
+                            title="Despatch Arrived",
+                            body=f"Truck {trip.vehicle.registration_no} has arrived at {trip.dbs.name}",
+                            data={
+                                "type": "dbs_arrival",
+                                "trip_id": str(trip.id),
+                                "driver_id": str(driver.id),
+                                "truck_number": trip.vehicle.registration_no,
+                                "trip_token": trip.token.token_no if trip.token else ""
+                            }
+                        )
+                except Exception as e:
+                    print(f"Error sending DBS arrival notification: {e}")
+
+            return Response({
+                "success": True,
+                "message": "Arrival at DBS confirmed"
+            })
+            
+        except Trip.DoesNotExist:
+             return Response({'error': 'Active trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['post'], url_path='meter-reading/confirm')
+    def confirm_meter_reading(self, request):
+        """
+        Confirm meter reading (Pre/Post) at MS or DBS.
+        """
+        driver = getattr(request.user, 'driver_profile', None)
+        if not driver:
+            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            
+        token_val = request.data.get('token')
+        station_type = request.data.get('stationType') # MS or DBS
+        reading_type = request.data.get('readingType') # pre or post
+        reading_val = request.data.get('reading')
+        photo_base64 = request.data.get('photoBase64') # Not saving yet
+        
+        try:
+            trip = Trip.objects.get(driver=driver, token__token_no=token_val)
+            
+            from .models import MSFilling, DBSDecanting
+            
+            # Handle Photo Upload
+            photo_file = None
+            if photo_base64:
+                try:
+                    import base64
+                    from django.core.files.base import ContentFile
+                    format, imgstr = photo_base64.split(';base64,') 
+                    ext = format.split('/')[-1] 
+                    file_name = f"reading_{trip.id}_{station_type}_{reading_type}_{uuid.uuid4().hex[:6]}.{ext}"
+                    photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
+                except Exception as e:
+                    print(f"Error decoding photo: {e}")
+                    # Don't fail the whole request? Or fail? User said "add this field", implies it's important.
+                    # But driver might have issues. Log and continue or fail? 
+                    # Let's log but continue for now, unless strict requirement.
+                    pass
+            
+            if station_type == 'MS':
+                # Ensure MSFilling record exists
+                filling, _ = MSFilling.objects.get_or_create(trip=trip)
+                
+                if reading_type == 'pre':
+                    filling.prefill_pressure_bar = reading_val
+                    filling.start_time = timezone.now()
+                    if photo_file:
+                        filling.prefill_photo = photo_file
+                elif reading_type == 'post':
+                    filling.postfill_pressure_bar = reading_val
+                    filling.end_time = timezone.now()
+                    if photo_file:
+                       filling.postfill_photo = photo_file
+                    
+                    if request.data.get('confirmed'):
+                        filling.confirmed_by_driver = request.user
+                        # Also update trip status if post-fill?
+                        trip.status = 'IN_TRANSIT'
+                        trip.ms_departure_at = timezone.now()
+                        trip.save()
+                filling.save()
+                
+            elif station_type == 'DBS':
+                # Ensure DBSDecanting record exists
+                decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+                
+                if reading_type == 'pre':
+                    decanting.pre_dec_reading = reading_val
+                    decanting.start_time = timezone.now()
+                    if photo_file:
+                        decanting.pre_decant_photo = photo_file
+                        
+                    trip.status = 'AT_DBS'
+                    trip.dbs_arrival_at = timezone.now()
+                    trip.save()
+                elif reading_type == 'post':
+                    decanting.post_dec_reading = reading_val
+                    decanting.end_time = timezone.now()
+                    if photo_file:
+                        decanting.post_decant_photo = photo_file
+                        
+                    if request.data.get('confirmed'):
+                        decanting.confirmed_by_driver = request.user
+                        trip.status = 'COMPLETED'
+                        trip.completed_at = timezone.now()
+                        trip.save()
+                decanting.save()
+                
+            return Response({"success": True})
+            
+        except Trip.DoesNotExist:
+             return Response({'error': 'Trip not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+
 
     @action(detail=False, methods=['get'], url_path='pending')
     def pending_offers(self, request):

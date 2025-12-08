@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 from core.models import User, Station, Route
 
 class Vehicle(models.Model):
@@ -35,6 +36,7 @@ class Driver(models.Model):
     phone = models.CharField(max_length=20)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
     trained = models.BooleanField(default=False)
+    license_verified = models.BooleanField(default=False)
     user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='driver_profile')
     assigned_vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_drivers')
 
@@ -59,10 +61,13 @@ class Shift(models.Model):
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    is_recurring = models.BooleanField(default=False)
+    recurrence_pattern = models.CharField(max_length=20, default='NONE') # DAILY, WEEKLY, etc.
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_shifts')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_shifts')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    rejection_reason = models.TextField(null=True, blank=True)
 
     class Meta:
         db_table = 'shifts'
@@ -87,6 +92,7 @@ class StockRequest(models.Model):
         ('APPROVED', 'Approved'),
         ('ASSIGNING', 'Assigning Driver'),
         ('ASSIGNED', 'Driver Assigned'),
+        ('COMPLETED', 'Completed'),
     ]
     PRIORITY_CHOICES = [
         ('H', 'High'),
@@ -135,8 +141,14 @@ class Token(models.Model):
     """
     vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE)
     ms = models.ForeignKey(Station, on_delete=models.CASCADE)
-    sequence_no = models.IntegerField()
+    token_no = models.CharField(max_length=20, unique=True, null=True) # Renamed from sequence_no and changed to CharField
     issued_at = models.DateTimeField(auto_now_add=True)
+    
+    def save(self, *args, **kwargs):
+        if not self.token_no:
+            import uuid
+            self.token_no = uuid.uuid4().hex[:12].upper()
+        super().save(*args, **kwargs)
 
     class Meta:
         db_table = 'tokens'
@@ -150,6 +162,7 @@ class Trip(models.Model):
         ('AT_MS', 'At MS'),
         ('IN_TRANSIT', 'In Transit'),
         ('AT_DBS', 'At DBS'),
+        ('DECANTING_CONFIRMED', 'Decanting Confirmed'),
         ('COMPLETED', 'Completed'),
         ('CANCELLED', 'Cancelled'),
     ]
@@ -161,7 +174,7 @@ class Trip(models.Model):
     ms = models.ForeignKey(Station, on_delete=models.CASCADE, related_name='trips_origin')
     dbs = models.ForeignKey(Station, on_delete=models.CASCADE, related_name='trips_destination')
     route = models.ForeignKey(Route, on_delete=models.SET_NULL, null=True, blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
     sto_number = models.CharField(max_length=100, null=True, blank=True)  # Stock Transfer Order number
     started_at = models.DateTimeField(null=True, blank=True)
     origin_confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -172,6 +185,7 @@ class Trip(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     rtkm_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     route_deviation = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'trips'
@@ -184,10 +198,17 @@ class MSFilling(models.Model):
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     prefill_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    topup_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True) # Renamed or added if needed, but sticking to user request
     postfill_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    prefill_mfm = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    postfill_mfm = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     filled_qty_kg = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     confirmed_by_ms_operator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='confirmed_fillings')
     confirmed_by_driver = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='driver_confirmed_fillings')
+    
+    # Photo Evidence
+    prefill_photo = models.ImageField(upload_to='ms_fillings/pre/', null=True, blank=True)
+    postfill_photo = models.ImageField(upload_to='ms_fillings/post/', null=True, blank=True)
 
     class Meta:
         db_table = 'ms_filling'
@@ -201,9 +222,15 @@ class DBSDecanting(models.Model):
     end_time = models.DateTimeField(null=True, blank=True)
     pre_dec_reading = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     post_dec_reading = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    pre_dec_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    post_dec_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     delivered_qty_kg = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     confirmed_by_dbs_operator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='confirmed_decantings')
     confirmed_by_driver = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='driver_confirmed_decantings')
+    
+    # Photo Evidence
+    pre_decant_photo = models.ImageField(upload_to='dbs_decantings/pre/', null=True, blank=True)
+    post_decant_photo = models.ImageField(upload_to='dbs_decantings/post/', null=True, blank=True)
 
     class Meta:
         db_table = 'dbs_decanting'

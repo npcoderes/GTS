@@ -26,7 +26,7 @@ class EICVehicleQueueView(views.APIView):
         # Get trips grouped by MS
         trips = Trip.objects.filter(query).select_related(
             'ms', 'vehicle', 'driver', 'driver__user', 'token'
-        ).order_by('ms__name', 'token__sequence_no', 'started_at')
+        ).order_by('ms__name', 'token__token_no', 'started_at')
         
         # Group by MS
         queue_by_ms = {}
@@ -43,7 +43,7 @@ class EICVehicleQueueView(views.APIView):
             queue_by_ms[ms_name]['totalVehicles'] += 1
             queue_by_ms[ms_name]['queue'].append({
                 'tripId': trip.id,
-                'tokenNumber': trip.token.sequence_no if trip.token else None,
+                'tokenNumber': trip.token.token_no if trip.token else None,
                 'vehicleNo': trip.vehicle.registration_no,
                 'driverName': trip.driver.user.full_name if trip.driver else 'Unassigned',
                 'destination': trip.dbs.name,
@@ -159,7 +159,7 @@ class EICClusterViewSet(viewsets.ModelViewSet):
                 },
                 'assignedDBS': dbs_list,
                 'linkedDbsCount': len(dbs_list),
-                'activeTrips': active_trips,
+                # 'activeTrips': active_trips,
                 'status': 'OPERATIONAL'
             })
         

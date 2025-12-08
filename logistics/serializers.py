@@ -59,7 +59,7 @@ class DriverSerializer(serializers.ModelSerializer):
             
             validated_data['user'] = user
             driver = super().create(validated_data)
-            
+                    
         return driver
 
 class ShiftSerializer(serializers.ModelSerializer):

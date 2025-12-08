@@ -5,7 +5,131 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import Trip, MSFilling, Token
 from core.models import Station
+from datetime import datetime, timedelta
 
+
+class MSDashboardView(views.APIView): #MS APP DASHBOARD
+    """
+    GET /api/ms/dashboard
+    Returns MS dashboard data including station info, summary counts, and trips.
+    """
+    
+    def get(self, request, ms_id=None):
+        # Determine MS Station
+        user = request.user
+        ms = None
+        
+        # 1. Try getting from URL param (if provided)
+        if ms_id:
+             ms = get_object_or_404(Station, id=ms_id, type='MS')
+        
+        # 2. Try query param (testing)
+        if not ms:
+            ms_id_param = request.query_params.get('ms_id')
+            if ms_id_param:
+                ms = get_object_or_404(Station, id=ms_id_param, type='MS')
+        
+        # 3. Try from User Role
+        if not ms:
+            user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
+            if user_role and user_role.station and user_role.station.type == 'MS':
+                ms = user_role.station
+                
+        # 4. Fallback/Error
+        if not ms:
+             return Response(
+                {'error': 'User is not assigned to an MS station and no ms_id provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Date Filtering
+        end_date_str = request.query_params.get('end_date')
+        start_date_str = request.query_params.get('start_date')
+        
+        try:
+            current_date = timezone.now().date()
+            if end_date_str:
+                end_date_obj = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            else:
+                end_date_obj = current_date
+            
+            # Make end_date inclusive (end of day)
+            # Filter logic: created_at or started_at? Typically started_at for trips.
+            # Using simple date comparison or ranges.
+            
+            if start_date_str:
+                start_date_obj = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            else:
+                start_date_obj = end_date_obj - timedelta(days=30)
+                
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Fetch Trips
+        # Relevant statuses for MS dashboard
+        # 'filling' card -> PENDING, AT_MS, FILLING, FILLED
+        # 'dispatched' card -> DISPATCHED, IN_TRANSIT, ARRIVED_AT_DBS, AT_DBS, DECANTING_STARTED, DECANTING_COMPLETE, DECANTING_CONFIRMED
+        # 'completed' card -> COMPLETED
+        # 'cancelled' card -> CANCELLED
+        trips = Trip.objects.filter(
+            ms=ms,
+            created_at__date__gte=start_date_obj,
+            created_at__date__lte=end_date_obj
+        ).select_related(
+            'dbs', 'vehicle'
+        ).prefetch_related('ms_fillings').order_by('-created_at', '-id')[:100] # Limit to recent 100 for dashboard
+        
+        summary = {
+            'filling': 0,
+            'dispatched': 0,
+            'completed': 0,
+            'cancelled': 0
+        }
+        
+        trip_list = []
+        
+        for trip in trips:
+            status_val = trip.status
+            
+            # Map to summary counts
+            if status_val in ['PENDING', 'AT_MS', 'FILLING', 'FILLED']:
+                summary['filling'] += 1
+            elif status_val in ['DISPATCHED', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']: 
+                # Note: DECANTING_CONFIRMED is effectively still "out there" until fully COMPLETED?
+                # Or should DECANTING_CONFIRMED count as completed? 
+                # Usually dispatch means valid active trip leaving MS.
+                summary['dispatched'] += 1
+            elif status_val == 'COMPLETED':
+                summary['completed'] += 1
+            elif status_val == 'CANCELLED':
+                summary['cancelled'] += 1
+            
+            # Get Quantity (Filled quantity)
+            filling = trip.ms_fillings.first()
+            quantity = float(filling.filled_qty_kg) if filling and filling.filled_qty_kg else 0
+            if quantity == 0 and trip.vehicle:
+                # Fallback to capacity if not filled yet? Or keep 0? User asked for 5000 example.
+                # Let's keep 0 if not filled, but user example shows quantity present.
+                pass 
+                
+            trip_list.append({
+                "id": f"TRIP-{trip.id:03d}",
+                "dbsId": trip.dbs.code if trip.dbs else "",
+                "status": status_val,
+                "quantity": quantity,
+                "scheduledTime": trip.started_at.isoformat() if trip.started_at else timezone.now().isoformat(), # Fallback
+                "dbsName": trip.dbs.name if trip.dbs else "Unknown",
+                "route": f"{ms.name} -> {trip.dbs.name}" if trip.dbs else f"{ms.name} -> ?"
+            })
+            
+        return Response({
+            "station": {
+                "msName": ms.name,
+                "location": ms.city or ms.address or "Unknown Location"
+            },
+            "summary": summary,
+            "trips": trip_list
+        })
 
 class MSTripScheduleView(views.APIView):
     """
@@ -71,7 +195,7 @@ class MSFillPrefillView(views.APIView):
     
     def get(self, request, token_id):
         # Get trip by token
-        token = get_object_or_404(Token, id=token_id, status='ACTIVE')
+        token = get_object_or_404(Token, token_no=token_id, status='ACTIVE')
         trip = token.trip
         
         # Get or create MSFilling record
@@ -100,105 +224,220 @@ class MSFillPrefillView(views.APIView):
         })
 
 
+class MSConfirmArrivalView(views.APIView):  #ms confirm arrival app api
+    """
+    Step 1: MS Arrival Confirm  POST /ms/arrival/confirm
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token_val = request.data.get('tripToken')
+        if not token_val:
+            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        trip = get_object_or_404(Trip, token__token_no=token_val)
+        
+        # Verify user is from correct MS?
+        # Assuming permissions handle general MS access for now.
+
+        if trip.status == 'PENDING': # Or other valid statuses?
+             trip.status = 'AT_MS'
+             trip.ms_return_at = timezone.now() # Are they returning? Or starting? 
+             # Initial flow: PENDING -> AT_MS. Return flow: ARRIVED_AT_MS? 
+             # If trip just started, it's PENDING or AT_MS. 
+             # If user says "Arrival Confirm", it usually means driver arrived.
+             # If status is already AT_MS, just return success.
+             trip.save()
+        elif trip.status != 'AT_MS':
+             # Maybe force update?
+             trip.status = 'AT_MS'
+             trip.save()
+
+        trip.started_at = timezone.now()
+        trip.save()
+
+        return Response({
+            "success": True,
+            "trip": {
+                "id": f"TRIP-{trip.id:03d}",
+                "status": "AT_MS",
+                "truckNumber": trip.vehicle.registration_no if trip.vehicle else ""
+            }
+        })
+
+
 class MSFillStartView(views.APIView):
-    """Start MS filling operation"""
+    """
+    Step 2: Start Filling (Pre-Readings) POST /ms/fill/start  app
+    """
     permission_classes = [IsAuthenticated]
     
-    def post(self, request, token_id):
-        token = get_object_or_404(Token, id=token_id, status='ACTIVE')
-        trip = token.trip
+    def post(self, request):
+        token_val = request.data.get('tripToken')
+        pressure = request.data.get('pressure')
+        mfm = request.data.get('mfm')
+        
+        if not token_val:
+            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        trip = get_object_or_404(Trip, token__token_no=token_val)
         
         # Get or create MSFilling record
         filling, created = MSFilling.objects.get_or_create(trip=trip)
         
         # Update filling start time and readings
         filling.start_time = timezone.now()
-        filling.prefill_pressure_bar = request.data.get('pressure', 0)
-        filling.prefill_mfm = request.data.get('mfm', 0)
+        if pressure: filling.prefill_pressure_bar = pressure
+        if mfm: filling.prefill_mfm = mfm
         filling.save()
         
         # Update trip status
         trip.status = 'FILLING'
         trip.save()
+
+        # Send WebSocket update to Driver
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            
+            channel_layer = get_channel_layer()
+            if trip.driver:
+                group_name = f"driver_{trip.driver.id}"
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        'type': 'driver.update',
+                        'data': {
+                            'type': 'MS_FILL_START',
+                            'trip_id': trip.id,
+                            'prefill_reading': float(filling.prefill_mfm or 0),
+                            'pressure': float(filling.prefill_pressure_bar or 0),
+                            'message': 'Filling started at MS'
+                        }
+                    }
+                )
+        except Exception as e:
+            print(f"WebSocket Error: {e}")
         
         return Response({
-            'status': 'started',
-            'tripId': trip.id,
-            'sessionId': trip.id,  # Use trip ID as session ID
-            'startTime': filling.start_time.isoformat()
+            "success": True,
+            "message": "Filling started successfully",
+            "trip": {
+                "status": "FILLING"
+            }
         })
 
 
 class MSFillEndView(views.APIView):
-    """End MS filling operation"""
+    """
+    Step 3: End Filling (Post-Readings) POST /ms/fill/end app
+    """
     permission_classes = [IsAuthenticated]
     
-    def post(self, request, token_id):
-        token = get_object_or_404(Token, id=token_id, status='ACTIVE')
-        trip = token.trip
+    def post(self, request):
+        token_val = request.data.get('tripToken')
+        pressure = request.data.get('pressure')
+        mfm = request.data.get('mfm')
+        
+        if not token_val:
+             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        trip = get_object_or_404(Trip, token__token_no=token_val)
         
         # Get MSFilling record
         filling = get_object_or_404(MSFilling, trip=trip)
         
         # Update filling end time and readings
         filling.end_time = timezone.now()
-        filling.postfill_pressure_bar = request.data.get('pressure', 0)
-        filling.postfill_mfm = request.data.get('mfm', 0)
+        if pressure: filling.postfill_pressure_bar = pressure
+        if mfm: filling.postfill_mfm = mfm
         
         # Calculate filled quantity
         if filling.prefill_mfm and filling.postfill_mfm:
-            filling.filled_qty_kg = float(filling.postfill_mfm) - float(filling.prefill_mfm)
+            try:
+                filling.filled_qty_kg = float(filling.postfill_mfm) - float(filling.prefill_mfm)
+            except ValueError:
+                pass 
         
         filling.save()
         
         # Update trip status
         trip.status = 'FILLED'
         trip.save()
+
+        # Send WebSocket update to Driver
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            
+            channel_layer = get_channel_layer()
+            if trip.driver:
+                group_name = f"driver_{trip.driver.id}"
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        'type': 'driver.update',
+                        'data': {
+                            'type': 'MS_FILL_END',
+                            'trip_id': trip.id,
+                            'postfill_reading': float(filling.postfill_mfm or 0),
+                            'pressure': float(filling.postfill_pressure_bar or 0),
+                            'filled_qty': float(filling.filled_qty_kg or 0),
+                            'message': 'Filling completed at MS'
+                        }
+                    }
+                )
+        except Exception as e:
+            print(f"WebSocket Error: {e}")
         
         return Response({
-            'status': 'completed',
-            'tripId': trip.id,
-            'filledQuantity': filling.filled_qty_kg,
-            'endTime': filling.end_time.isoformat(),
-            'readings': {
-                'preFill': {
-                    'pressure': filling.prefill_pressure_bar,
-                    'mfm': filling.prefill_mfm
-                },
-                'postFill': {
-                    'pressure': filling.postfill_pressure_bar,
-                    'mfm': filling.postfill_mfm
-                }
+            "success": True,
+            "message": "Filling ended successfully",
+            "trip": {
+                "status": "FILLED"
             }
         })
 
 
-class STOGenerateView(views.APIView):
-    """Generate STO (Stock Transfer Order) for trip"""
+class MSConfirmFillingView(views.APIView):
+    """
+    Step 4: Final Confirmation     POST /ms/fill/confirm:  app
+    """
     permission_classes = [IsAuthenticated]
     
-    def post(self, request, trip_id):
-        trip = get_object_or_404(Trip, id=trip_id)
+    def post(self, request):
+        token_val = request.data.get('tripToken')
+        delivered_qty = request.data.get('deliveredQty')
+        
+        if not token_val:
+             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        trip = get_object_or_404(Trip, token__token_no=token_val)
         filling = get_object_or_404(MSFilling, trip=trip)
         
-        # Generate STO number (in real system, this would integrate with SAP)
-        sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M%S')}"
+        if delivered_qty:
+             filling.filled_qty_kg = delivered_qty
+             filling.save()
         
-        # Update trip with STO info
-        trip.sto_number = sto_number
+        # Generate STO logic here or just mark status?
+        # User says "Operation confirmed" -> status: COMPLETED (or similar)
+        # We will set to DISPATCHED as it leaves MS? 
+        # But payload expectation says "trip": {"status": "COMPLETED"}
+        # Let's verify if COMPLETED is appropriate. If it's the *filling* completion, maybe FILLED is enough?
+        # If the trip is starting, DISPATCHED is the correct flow. 
+        # But if the user wants "COMPLETED" in response, we can send that string key for frontend 
+        # while keeping internal status correct.
+        
         trip.status = 'DISPATCHED'
+        trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
         trip.ms_departure_at = timezone.now()
         trip.save()
         
         return Response({
-            'status': 'generated',
-            'stoNumber': sto_number,
-            'tripId': trip.id,
-            'quantity': filling.filled_qty_kg,
-            'generatedAt': timezone.now().isoformat(),
-            'route': {
-                'from': trip.ms.name,
-                'to': trip.dbs.name
+            "success": True,
+            "message": "Operation confirmed",
+            "trip": {
+                "status": "COMPLETED" # For frontend UI as requested
             }
         })
 
@@ -239,3 +478,167 @@ class MSStockTransferListView(views.APIView):
         
         return Response(data)
 
+
+class MSClusterView(views.APIView):
+    """
+    GET /api/ms/cluster
+    Fetches the list of DBS stations linked to the logged-in MS. app
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # Determine MS (similar logic to dashboard)
+        ms = None
+        # 1. From URL/Query param (for testing/admin)
+        ms_id_param = request.query_params.get('ms_id')
+        if ms_id_param:
+             ms = Station.objects.filter(id=ms_id_param, type='MS').first()
+        
+        # 2. From User Role
+        if not ms:
+            user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
+            if user_role and user_role.station and user_role.station.type == 'MS':
+                ms = user_role.station
+        
+        if not ms:
+             return Response(
+                {'error': 'User is not assigned to an MS station'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get Linked DBS
+        linked_dbs = Station.objects.filter(parent_station=ms, type='DBS')
+        
+        dbs_list = []
+        for dbs in linked_dbs:
+            dbs_list.append({
+                "dbsId": dbs.id, # Or dbs.code? User example shows "DBS-01" which looks like code or ID.
+                "dbsName": dbs.name,
+                "location": dbs.address or dbs.city or "Unknown",
+                "region": dbs.city or "Unknown", # Fallback to city as state/region not on model
+                "primaryMsName": ms.name
+            })
+            
+        return Response({
+            "ms": {
+                "msName": ms.name
+            },
+            "dbs": dbs_list
+        })
+
+
+class MSStockTransferHistoryByDBSView(views.APIView):
+    """
+    GET /api/ms/stock-transfers/by-dbs
+    Fetches history of stock transfers for a specific DBS.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        
+        # Determine MS
+        ms = None
+        ms_id_param = request.query_params.get('ms_id') # Optional override
+        if ms_id_param:
+             ms = Station.objects.filter(id=ms_id_param, type='MS').first()
+        
+        if not ms:
+            user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
+            if user_role and user_role.station and user_role.station.type == 'MS':
+                ms = user_role.station
+        
+        if not ms:
+             return Response({'error': 'MS not identified'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get Parameters
+        dbs_id = request.query_params.get('dbs_id')
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+        
+        if not dbs_id:
+            return Response({'error': 'dbs_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Get DBS
+        dbs = get_object_or_404(Station, id=dbs_id, type='DBS', parent_station=ms)
+        
+        # Filter Trips
+        trips = Trip.objects.filter(ms=ms, dbs=dbs)
+        
+        # Date Filtering
+        if start_date_str and end_date_str:
+            try:
+                from django.utils.dateparse import parse_datetime
+                start_date = parse_datetime(start_date_str)
+                end_date = parse_datetime(end_date_str)
+                
+                # If parse_datetime returns None (e.g. YYYY-MM-DD only), try strptime
+                if not start_date:
+                    start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+                if not end_date:
+                    end_date = datetime.strptime(end_date_str, '%Y-%m-%d') + timedelta(days=1)
+                
+                trips = trips.filter(created_at__range=[start_date, end_date])
+            except Exception as e:
+                print(f"Date filter error: {e}")
+                pass
+                
+        trips = trips.select_related('dbs', 'vehicle').prefetch_related('ms_fillings').order_by('-created_at')
+
+        # Summary Calculation
+        total_transfers = 0
+        in_progress = 0
+        completed = 0
+        
+        transfer_list = []
+        
+        for trip in trips:
+            status_val = trip.status
+            total_transfers += 1
+            
+            # Map status
+            # In Progress: PENDING, AT_MS, FILLING, FILLED, DISPATCHED, IN_TRANSIT, ARRIVED_at_DBS, AT_DBS, DECANTING...
+            # Completed: COMPLETED
+            # User example: COMPLETED vs IN_PROGRESS
+            
+            trip_status_mapped = "IN_PROGRESS"
+            if status_val == 'COMPLETED':
+                completed += 1
+                trip_status_mapped = "COMPLETED"
+            elif status_val == 'CANCELLED':
+                 trip_status_mapped = "CANCELLED"
+                 # Do we count cancelled? User summary didn't explicitly say.
+            else:
+                in_progress += 1
+                
+            # Values
+            filling = trip.ms_fillings.first()
+            qty = float(filling.filled_qty_kg) if filling and filling.filled_qty_kg else 0
+            
+            transfer_list.append({
+                "id": f"TRIP-{trip.id:03d}", # User requested TRF-1001 like ID, using TRIP check
+                "type": "OUTGOING", # From MS perspective
+                "status": trip_status_mapped,
+                "productName": "CNG",
+                "quantity": qty,
+                "initiatedAt": trip.created_at.isoformat() if trip.created_at else None, # or started_at
+                "completedAt": trip.completed_at.isoformat() if trip.completed_at else None,
+                "estimatedCompletion": (trip.created_at + timedelta(hours=4)).isoformat() if trip.created_at else None, # Dummy estimate
+                "fromLocation": ms.name,
+                "toLocation": dbs.name,
+                "notes": trip.sto_number or ""
+            })
+
+        return Response({
+            "summary": {
+                "totalTransfers": total_transfers,
+                "inProgress": in_progress,
+                "completed": completed,
+                "outgoingTotal": total_transfers,
+                "outgoingInProgress": in_progress,
+                "outgoingCompleted": completed
+            },
+            "transfers": transfer_list
+        })

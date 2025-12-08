@@ -57,7 +57,7 @@ class NotificationService:
             # Check if Firebase app already exists
             try:
                 self._firebase_app = firebase_admin.get_app()
-                logger.info("✅ Firebase app already initialized, reusing existing app")
+                logger.info("Firebase app already initialized, reusing existing app")
                 return
             except ValueError:
                 # App doesn't exist, continue with initialization
@@ -77,14 +77,14 @@ class NotificationService:
                 }
                 cred = credentials.Certificate(cred_dict)
                 self._firebase_app = firebase_admin.initialize_app(cred)
-                logger.info("✅ Firebase initialized from environment variables")
+                logger.info("Firebase initialized from environment variables")
             else:
                 # Fallback to JSON file (for local development)
                 cred_file = getattr(settings, 'FIREBASE_CREDENTIALS_FILE', None)
                 if cred_file and os.path.exists(cred_file):
                     cred = credentials.Certificate(cred_file)
                     self._firebase_app = firebase_admin.initialize_app(cred)
-                    logger.info("✅ Firebase initialized from JSON file")
+                    logger.info("Firebase initialized from JSON file")
                 else:
                     logger.warning("No Firebase credentials found")
                     self.mock_mode = True
@@ -142,7 +142,6 @@ class NotificationService:
             
             # Send the message
             response = messaging.send(message)
-            
             logger.info(f"FCM notification sent: {response}, data: {message_data}")
             return {'status': 'sent', 'message_id': response}
             
@@ -185,6 +184,8 @@ class NotificationService:
             status='SENT' if result['status'] == 'sent' else 'FAILED',
             sent_at=timezone.now()
         )
+
+        logger.info(f"Notification logged: {user.email} - {notification_type}")
         
         return result
     
@@ -278,7 +279,7 @@ class NotificationService:
         """Alert EIC about gas variance exceeding threshold."""
         return self.send_to_user(
             user=eic_user,
-            title="⚠️ Variance Alert",
+            title="Variance Alert",
             body=f"Trip {trip.id} has {variance_pct:.2f}% variance (threshold: 0.5%)",
             data={
                 'tripId': str(trip.id),

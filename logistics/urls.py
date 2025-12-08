@@ -3,9 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     StockRequestViewSet, TripViewSet, DriverViewSet, ShiftViewSet, VehicleViewSet,
     DriverLocationView, DriverArrivalMSView, DriverArrivalDBSView,
-    MeterReadingConfirmationView, TripCompleteView, EmergencyReportView,
-    MSConfirmArrivalView, MSPreReadingView, MSPostReadingView, MSConfirmSAPView,
-    DBSDecantArriveView, DBSDecantPreView, DBSDecantStartView, DBSDecantEndView, DBSDecantConfirmView
+    MeterReadingConfirmationView, TripCompleteView, EmergencyReportView
 )
 from .eic_views import (
     EICStockRequestViewSet, EICDashboardView, 
@@ -14,9 +12,13 @@ from .eic_views import (
     EICVehicleTrackingView, EICIncomingStockRequestsView
 )
 from .dbs_views import DBSDashboardView
-from .dbs_views import DBSStockTransferListView
+from .dbs_views import DBSStockTransferListView, DBSStockRequestViewSet
 from .driver_views import DriverTripViewSet
-from .ms_views import MSFillPrefillView, MSFillStartView, MSFillEndView, STOGenerateView, MSStockTransferListView, MSTripScheduleView
+from .ms_views import (
+    MSFillPrefillView, MSFillStartView, MSFillEndView, MSStockTransferListView, 
+    MSTripScheduleView, MSDashboardView, MSConfirmArrivalView, MSConfirmFillingView,
+    MSClusterView, MSStockTransferHistoryByDBSView
+)
 from .eic_management_views import EICVehicleQueueView, EICClusterViewSet, EICStockTransferMSDBSView, EICStockTransfersByDBSView
 
 # Notification Views
@@ -67,13 +69,11 @@ urlpatterns = [
     
     # Driver API
     path('driver/location', DriverLocationView.as_view()),
-    path('driver/arrival/ms', DriverArrivalMSView.as_view()),
-    path('driver/arrival/dbs', DriverArrivalDBSView.as_view()),
-    path('driver/meter-reading/confirm', MeterReadingConfirmationView.as_view()),
+    path('driver/arrival/ms', DriverTripViewSet.as_view({'post': 'arrival_at_ms'})),
+    path('driver/arrival/dbs', DriverTripViewSet.as_view({'post': 'arrival_at_dbs'})), 
+    path('driver/meter-reading/confirm', DriverTripViewSet.as_view({'post': 'confirm_meter_reading'})),
     path('driver/trip/complete', TripCompleteView.as_view()),
     path('driver/emergency', EmergencyReportView.as_view()),
-    path('driver/trip/<int:pk>/accept', TripViewSet.as_view({'post': 'accept'})),
-    path('driver/trip/<int:pk>/reject', TripViewSet.as_view({'post': 'reject'})),
     path('driver/trip/status', TripViewSet.as_view({'get': 'status'})),
     path('driver/<int:pk>/token', DriverViewSet.as_view({'get': 'token'})),
     path('driver/<int:pk>/trips', DriverViewSet.as_view({'get': 'trips'})),
@@ -83,18 +83,18 @@ urlpatterns = [
     path('driver/notifications/unregister', DriverNotificationUnregisterView.as_view(), name='driver-notif-unregister'),
 
     # MS API
-    path('ms/confirm-arrival', MSConfirmArrivalView.as_view()),
-    path('ms/pre-reading', MSPreReadingView.as_view()),
-    path('ms/post-reading', MSPostReadingView.as_view()),
-    path('ms/confirm-sap', MSConfirmSAPView.as_view()),
-    
-    # MS Filling API (Token-based for mobile app)
-    path('ms/fill/<str:token_id>/prefill', MSFillPrefillView.as_view(), name='ms-fill-prefill'),
-    path('ms/fill/<str:token_id>/start', MSFillStartView.as_view(), name='ms-fill-start'),
-    path('ms/fill/<str:token_id>/end', MSFillEndView.as_view(), name='ms-fill-end'),
-    path('sto/<int:trip_id>/generate', STOGenerateView.as_view(), name='sto-generate'),
+    path('ms/dashboard/', MSDashboardView.as_view(), name='ms-dashboard'),
+    path('ms/arrival/confirm', MSConfirmArrivalView.as_view(), name='ms-arrival-confirm'),
+    path('ms/fill/start', MSFillStartView.as_view(), name='ms-fill-start'),
+    path('ms/fill/end', MSFillEndView.as_view(), name='ms-fill-end'),
+    path('ms/fill/confirm', MSConfirmFillingView.as_view(), name='ms-fill-confirm'),
+
     path('ms/<str:ms_id>/transfers', MSStockTransferListView.as_view(), name='ms-transfers'),
     path('ms/<str:ms_id>/schedule', MSTripScheduleView.as_view(), name='ms-trip-schedule'),
+    
+    # MS App Stock Transfer Screens  APP  APIS 
+    path('ms/cluster', MSClusterView.as_view(), name='ms-cluster'),
+    path('ms/stock-transfers/by-dbs', MSStockTransferHistoryByDBSView.as_view(), name='ms-stock-transfers-by-dbs'),
     
     # MS Notification Registration
     path('ms/notifications/register', MSNotificationRegisterView.as_view(), name='ms-notif-register'),
@@ -103,15 +103,15 @@ urlpatterns = [
     # EIC Management
     path('eic/vehicle-queue', EICVehicleQueueView.as_view(), name='eic-vehicle-queue'),
 
-    # DBS Decanting API
-    path('dbs/decant/arrive', DBSDecantArriveView.as_view()),
-    path('dbs/decant/pre', DBSDecantPreView.as_view()),
-    path('dbs/decant/start', DBSDecantStartView.as_view()),
-    path('dbs/decant/end', DBSDecantEndView.as_view()),
-    path('dbs/decant/confirm', DBSDecantConfirmView.as_view()),
-    
-    # DBS Notification Registration
+    # DBS Notification Registration apps
     path('dbs/notifications/register', DBSNotificationRegisterView.as_view(), name='dbs-notif-register'),
     path('dbs/notifications/unregister', DBSNotificationUnregisterView.as_view(), name='dbs-notif-unregister'),
+    
+    # DBS Stock Requests apps
+    path('dbs/stock-requests', DBSStockRequestViewSet.as_view({'get': 'list'}), name='dbs-stock-requests'),
+    path('dbs/stock-requests/arrival/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_arrival'}), name='dbs-stock-request-confirm-arrival'),
+    path('dbs/stock-requests/decant/start', DBSStockRequestViewSet.as_view({'post': 'decant_start'}), name='dbs-decant-start'),
+    path('dbs/stock-requests/decant/end', DBSStockRequestViewSet.as_view({'post': 'decant_end'}), name='dbs-decant-end'),
+    path('dbs/stock-requests/decant/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_decanting'}), name='dbs-decant-confirm'),
 ]
 
