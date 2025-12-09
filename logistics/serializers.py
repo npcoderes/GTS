@@ -166,6 +166,42 @@ class TripSerializer(serializers.ModelSerializer):
         model = Trip
         fields = '__all__'
 
+class TripHistorySerializer(serializers.ModelSerializer):
+    """Serializer for driver trip history with specific frontend format."""
+    tripId = serializers.IntegerField(source='id', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    acceptedAt = serializers.DateTimeField(source='started_at', read_only=True, allow_null=True)
+    completedAt = serializers.DateTimeField(source='completed_at', read_only=True, allow_null=True)
+    msLocation = serializers.SerializerMethodField()
+    dbsLocation = serializers.SerializerMethodField()
+    deliveredQty = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Trip
+        fields = ['tripId', 'status', 'createdAt', 'acceptedAt', 'completedAt', 
+                  'msLocation', 'dbsLocation', 'deliveredQty']
+
+    def get_msLocation(self, obj):
+        return {'name': obj.ms.name} if obj.ms else None
+
+    def get_dbsLocation(self, obj):
+        return {'name': obj.dbs.name} if obj.dbs else None
+
+    def get_deliveredQty(self, obj):
+        # Priority: DBSDecanting -> MSFilling -> StockRequest
+        decanting = obj.dbs_decantings.first()
+        if decanting and decanting.delivered_qty_kg:
+            return float(decanting.delivered_qty_kg)
+        
+        filling = obj.ms_fillings.first()
+        if filling and filling.filled_qty_kg:
+            return float(filling.filled_qty_kg)
+        
+        if obj.stock_request and obj.stock_request.requested_qty_kg:
+            return float(obj.stock_request.requested_qty_kg)
+        
+        return None
+
 class MSFillingSerializer(serializers.ModelSerializer):
     trip_details = TripSerializer(source='trip', read_only=True)
     confirmed_by_ms_operator_details = UserSerializer(source='confirmed_by_ms_operator', read_only=True)

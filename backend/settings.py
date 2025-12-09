@@ -111,7 +111,7 @@ DATABASES = {
     'default': dj_database_url.config(default=os.getenv('DATABASE_URL'), conn_max_age=600, ssl_require=True)
 }   
 
-
+   
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
@@ -136,11 +136,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
+USE_TZ = True
+
 
 USE_I18N = True
-
-USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
@@ -177,6 +177,8 @@ CORS_ALLOW_HEADERS = [
 
 # REST Framework Configuration
 REST_FRAMEWORK = {
+    "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S%z", 
+    "USE_LOCAL_TIME": True,
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
@@ -300,4 +302,34 @@ FCM_MOCK_MODE = False  # Set to True for development without Firebase
 
 # Path to Firebase service account JSON
 FIREBASE_CREDENTIALS_FILE = os.path.join(BASE_DIR, 'gts-app-ce5ca-firebase-adminsdk-fbsvc-560c4032e5.json')
+
+
+# ==========================================
+# Driver Assignment Configuration
+# ==========================================
+# Time limit (in seconds) for driver to accept an assigned trip
+# After this time, the assignment expires and EIC is notified
+DRIVER_ASSIGNMENT_TIMEOUT_SECONDS = int(os.getenv('DRIVER_ASSIGNMENT_TIMEOUT_SECONDS', '300'))  # Default: 5 minutes
+
+# ==========================================
+# Celery Configuration
+# ==========================================
+# Broker URL - use Redis in production, or memory for dev
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+
+# Task settings
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'Asia/Kolkata'
+CELERY_ENABLE_UTC = True
+
+# Celery Beat schedule for periodic tasks
+CELERY_BEAT_SCHEDULE = {
+    'check-expired-driver-assignments': {
+        'task': 'logistics.check_expired_driver_assignments',
+        'schedule': 60.0,  # Run every 60 seconds
+    },
+}
 

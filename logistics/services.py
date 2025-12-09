@@ -104,7 +104,7 @@ def get_available_drivers(ms_id):
     
     # 2. Drivers currently on active trips
     busy_driver_ids = Trip.objects.filter(
-        status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS']
+        status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS','DECANTING_CONFIRMED']
     ).values_list('driver_id', flat=True)
     
     # 3. Exclude busy drivers

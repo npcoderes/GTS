@@ -4,6 +4,10 @@ URL configuration for core app API
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from core import views
+from core.permission_views import (
+    user_permissions_view, PermissionViewSet, RolePermissionViewSet, 
+    UserPermissionViewSet, RoleListWithPermissionsView
+)
 
 router = DefaultRouter()
 router.register(r'users', views.UserViewSet, basename='user')
@@ -13,11 +17,20 @@ router.register(r'stations', views.StationViewSet, basename='station')
 router.register(r'routes', views.RouteViewSet, basename='route')
 router.register(r'ms-dbs-maps', views.MSDBSMapViewSet, basename='ms-dbs-map')
 
+# Permission management routers
+router.register(r'permissions', PermissionViewSet, basename='permission')
+router.register(r'role-permissions', RolePermissionViewSet, basename='role-permission')
+router.register(r'user-permissions', UserPermissionViewSet, basename='user-permission')
+
 urlpatterns = [
     path('auth/login/', views.login_view, name='login'),
     path('auth/logout/', views.logout_view, name='logout'),
     path('auth/me/', views.current_user_view, name='current-user'),
     path('auth/choose-role', views.choose_role_view, name='choose-role'),
+    path('auth/permissions/', user_permissions_view, name='user-permissions'),
+    
+    # Permission management
+    path('roles-with-permissions/', RoleListWithPermissionsView.as_view(), name='roles-with-permissions'),
     
     # FCM Notifications
     path('notifications/register-token', views.register_fcm_token, name='register-fcm-token'),
@@ -27,3 +40,4 @@ urlpatterns = [
     
     path('', include(router.urls)),
 ]
+

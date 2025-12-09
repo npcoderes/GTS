@@ -117,7 +117,7 @@ class MSDashboardView(views.APIView): #MS APP DASHBOARD
                 "dbsId": trip.dbs.code if trip.dbs else "",
                 "status": status_val,
                 "quantity": quantity,
-                "scheduledTime": trip.started_at.isoformat() if trip.started_at else timezone.now().isoformat(), # Fallback
+                "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else timezone.localtime(timezone.now()).isoformat(), # Fallback
                 "dbsName": trip.dbs.name if trip.dbs else "Unknown",
                 "route": f"{ms.name} -> {trip.dbs.name}" if trip.dbs else f"{ms.name} -> ?"
             })
@@ -167,7 +167,7 @@ class MSTripScheduleView(views.APIView):
                 'dbsId': trip.dbs.code if trip.dbs else None,
                 'dbsName': trip.dbs.name if trip.dbs else None,
                 'status': trip.status,
-                'scheduledTime': trip.started_at.isoformat() if trip.started_at else None,
+                'scheduledTime': timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
                 'product': 'CNG',  # Default product
                 'quantity': qty,
                 'vehicleNumber': trip.vehicle.registration_no if trip.vehicle else None,
@@ -472,7 +472,7 @@ class MSStockTransferListView(views.APIView):
                 "quantity": qty,
                 "status": trip.status,
                 "vehicleNo": trip.vehicle.registration_no,
-                "transferredAt": transfer_time.isoformat() if transfer_time else None,
+                "transferredAt": timezone.localtime(transfer_time).isoformat() if transfer_time else None,
                 "stoNumber": trip.sto_number
             })
         
@@ -623,9 +623,9 @@ class MSStockTransferHistoryByDBSView(views.APIView):
                 "status": trip_status_mapped,
                 "productName": "CNG",
                 "quantity": qty,
-                "initiatedAt": trip.created_at.isoformat() if trip.created_at else None, # or started_at
-                "completedAt": trip.completed_at.isoformat() if trip.completed_at else None,
-                "estimatedCompletion": (trip.created_at + timedelta(hours=4)).isoformat() if trip.created_at else None, # Dummy estimate
+                "initiatedAt": timezone.localtime(trip.created_at).isoformat() if trip.created_at else None, # or started_at
+                "completedAt": timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
+                "estimatedCompletion": timezone.localtime(trip.created_at + timedelta(hours=4)).isoformat() if trip.created_at else None, # Dummy estimate
                 "fromLocation": ms.name,
                 "toLocation": dbs.name,
                 "notes": trip.sto_number or ""
@@ -641,4 +641,65 @@ class MSStockTransferHistoryByDBSView(views.APIView):
                 "outgoingCompleted": completed
             },
             "transfers": transfer_list
+        })
+
+
+class MSPendingArrivalsView(views.APIView):
+    """
+    GET /api/ms/pending-arrivals
+    Returns list of trucks that have arrived at MS (status=AT_MS) 
+    with the same data structure as the push notification.
+    This is a fallback for when notifications are missed/cleared.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        ms = None
+        
+        # Try query param (for testing)
+        ms_id_param = request.query_params.get('ms_id')
+        if ms_id_param:
+            ms = get_object_or_404(Station, id=ms_id_param, type='MS')
+        else:
+            # Get from user role
+            user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
+            if user_role and user_role.station and user_role.station.type == 'MS':
+                ms = user_role.station
+        
+        if not ms:
+            return Response(
+                {'error': 'User is not assigned to an MS station'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get trips that have arrived at MS (waiting for filling to start)
+        # These are trips where driver has clicked "Arrive at MS"
+        pending_arrivals = Trip.objects.filter(
+            ms=ms,
+            status__in=['AT_MS', 'PENDING']  # AT_MS = arrived, PENDING might also be waiting
+        ).filter(
+            origin_confirmed_at__isnull=False  # Driver has confirmed arrival
+        ).select_related('vehicle', 'driver', 'driver__user', 'token').order_by('-origin_confirmed_at')
+        
+        arrivals = []
+        for trip in pending_arrivals:
+            arrivals.append({
+                # Same structure as notification data
+                "type": "ms_arrival",
+                "tripId": str(trip.id),
+                "driverId": str(trip.driver.id) if trip.driver else "",
+                "truckNumber": trip.vehicle.registration_no if trip.vehicle else "",
+                "tripToken": trip.token.token_no if trip.token else "",
+                # Additional helpful info
+                "driverName": trip.driver.user.get_full_name() if trip.driver and trip.driver.user else "",
+                "arrivedAt": timezone.localtime(trip.origin_confirmed_at).isoformat() if trip.origin_confirmed_at else None,
+                "msName": ms.name,
+                "dbsName": trip.dbs.name if trip.dbs else "",
+            })
+        
+        return Response({
+            "success": True,
+            "stationName": ms.name,
+            "arrivals": arrivals
         })

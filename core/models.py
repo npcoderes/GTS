@@ -194,6 +194,28 @@ class Station(models.Model):
         verbose_name='Parent Station',
         help_text='Parent Mother Station (for DBS only).',
     )
+    capacity_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name='Capacity (kg)',
+        help_text='Total storage capacity for the station in kilograms.',
+    )
+    current_stock_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name='Current Stock (kg)',
+        help_text='Latest recorded stock for the station in kilograms.',
+    )
+    stock_updated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Stock Updated At',
+        help_text='Timestamp of the latest stock update.',
+    )
 
     class Meta:
         verbose_name = 'Station'

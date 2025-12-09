@@ -13,7 +13,8 @@ from .models import (
 from .serializers import (
     VehicleSerializer, DriverSerializer, StockRequestSerializer,
     TokenSerializer, TripSerializer, MSFillingSerializer,
-    DBSDecantingSerializer, ReconciliationSerializer, AlertSerializer, ShiftSerializer
+    DBSDecantingSerializer, ReconciliationSerializer, AlertSerializer, ShiftSerializer,
+    TripHistorySerializer
 )
 from core.models import Station, User
 
@@ -167,6 +168,22 @@ class DriverViewSet(viewsets.ModelViewSet):
         serializer = TripSerializer(trips, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'])
+    def current_driver_trips(self, request):
+        """Get trip history for authenticated driver."""
+        try:
+            driver = request.user.driver_profile
+        except (AttributeError, Driver.DoesNotExist):
+            return Response({'error': 'User is not a driver'}, status=403)
+        
+        trips = Trip.objects.filter(driver=driver)\
+            .select_related('ms', 'dbs', 'stock_request')\
+            .prefetch_related('dbs_decantings', 'ms_fillings')\
+            .order_by('-id')
+        
+        serializer = TripHistorySerializer(trips, many=True)
+        return Response({'trips': serializer.data})
+
 class ShiftViewSet(viewsets.ModelViewSet):
     queryset = Shift.objects.all()
     serializer_class = ShiftSerializer
@@ -257,8 +274,8 @@ class ShiftViewSet(viewsets.ModelViewSet):
             'shift_id': shift.id,
             'status': shift.status,
             'driver_id': shift.driver_id,
-            'start_time': shift.start_time.isoformat(),
-            'end_time': shift.end_time.isoformat(),
+            'start_time': timezone.localtime(shift.start_time).isoformat(),
+            'end_time': timezone.localtime(shift.end_time).isoformat(),
             'data': serializer.data
         }, status=status.HTTP_201_CREATED)
 
@@ -376,6 +393,7 @@ class TripCompleteView(views.APIView):
         token_id = request.data.get('token')
         trip = get_trip_by_token(token_id)
         trip.status = 'COMPLETED'
+        trip.ms_return_at = timezone.now()
         trip.completed_at = timezone.now()
         trip.save()
         return Response({'status': 'completed'})

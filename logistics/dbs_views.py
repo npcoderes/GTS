@@ -77,7 +77,7 @@ class DBSDashboardView(views.APIView):
                 "route": f"{trip.ms.name} → {trip.dbs.name}",
                 "msName": trip.ms.name,
                 "dbsName": trip.dbs.name,
-                "scheduledTime": trip.started_at.isoformat() if trip.started_at else None, # Using started_at as proxy for scheduled
+                "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else None, # Using started_at as proxy for scheduled
                 "quantity": quantity,
                 "vehicleNo": trip.vehicle.registration_no
             }
@@ -444,8 +444,8 @@ class DBSStockTransferListView(views.APIView):
                 "type": "INCOMING",  # All trips to DBS are incoming transfers
                 "status": "COMPLETED" if is_completed else "IN_PROGRESS",
                 "quantity": qty,
-                "initiatedAt": initiated_at.isoformat() if initiated_at else None,
-                "completedAt": completed_at.isoformat() if completed_at else None,
+                "initiatedAt": timezone.localtime(initiated_at).isoformat() if initiated_at else None,
+                "completedAt": timezone.localtime(completed_at).isoformat() if completed_at else None,
                 "fromLocation": trip.ms.name,
                 "toLocation": trip.dbs.name,
                 "notes": f"Trip #{trip.id} - {trip.status}"
@@ -454,5 +454,70 @@ class DBSStockTransferListView(views.APIView):
         return Response({
             "transfers": transfers,
             "summary": summary
+        })
+
+
+class DBSPendingArrivalsView(views.APIView):
+    """
+    GET /api/dbs/pending-arrivals
+    Returns list of trucks that have arrived at DBS (status=AT_DBS) 
+    with the same data structure as the push notification.
+    This is a fallback for when notifications are missed/cleared.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        dbs = None
+        
+        # Try query param (for testing)
+        dbs_id_param = request.query_params.get('dbs_id')
+        if dbs_id_param:
+            dbs = get_object_or_404(Station, id=dbs_id_param, type='DBS')
+        else:
+            # Get from user role
+            user_role = user.user_roles.filter(role__code='DBS_OPERATOR', active=True).first()
+            if user_role and user_role.station and user_role.station.type == 'DBS':
+                dbs = user_role.station
+        
+        if not dbs:
+            return Response(
+                {'error': 'User is not assigned to a DBS station'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get trips that have arrived at DBS (waiting for decanting to start)
+        # These are trips where driver has clicked "Arrive at DBS"
+        pending_arrivals = Trip.objects.filter(
+            dbs=dbs,
+            status__in=['AT_DBS', 'ARRIVED_AT_DBS']  # AT_DBS = arrived, waiting for decanting
+        ).filter(
+            dbs_arrival_at__isnull=False  # Driver has confirmed arrival
+        ).select_related('vehicle', 'driver', 'driver__user', 'token', 'ms').order_by('-dbs_arrival_at')
+        
+        arrivals = []
+        for trip in pending_arrivals:
+            arrivals.append({
+                # Same structure as notification data (matching dbs_arrival notification)
+                "type": "dbs_arrival",
+                "trip_id": str(trip.id),
+                "tripId": str(trip.id),  # Also include camelCase for frontend consistency
+                "driver_id": str(trip.driver.id) if trip.driver else "",
+                "driverId": str(trip.driver.id) if trip.driver else "",
+                "truck_number": trip.vehicle.registration_no if trip.vehicle else "",
+                "truckNumber": trip.vehicle.registration_no if trip.vehicle else "",
+                "trip_token": trip.token.token_no if trip.token else "",
+                "tripToken": trip.token.token_no if trip.token else "",
+                # Additional helpful info
+                "driverName": trip.driver.user.get_full_name() if trip.driver and trip.driver.user else "",
+                "arrivedAt": timezone.localtime(trip.dbs_arrival_at).isoformat() if trip.dbs_arrival_at else None,
+                "msName": trip.ms.name if trip.ms else "",
+                "dbsName": dbs.name,
+            })
+        
+        return Response({
+            "success": True,
+            "stationName": dbs.name,
+            "arrivals": arrivals
         })
 

@@ -11,13 +11,22 @@ from .eic_views import (
     EICNetworkOverviewView, EICReconciliationReportView, EICReconciliationActionView,
     EICVehicleTrackingView, EICIncomingStockRequestsView
 )
-from .dbs_views import DBSDashboardView
+from .customer_views import (
+    CustomerDashboardView,
+    CustomerStocksView,
+    CustomerTransportView,
+    CustomerTransfersView,
+    CustomerPendingTripsView,
+    CustomerPermissionsView,
+    CustomerTripAcceptView,
+)
+from .dbs_views import DBSDashboardView, DBSPendingArrivalsView
 from .dbs_views import DBSStockTransferListView, DBSStockRequestViewSet
 from .driver_views import DriverTripViewSet
 from .ms_views import (
     MSFillPrefillView, MSFillStartView, MSFillEndView, MSStockTransferListView, 
     MSTripScheduleView, MSDashboardView, MSConfirmArrivalView, MSConfirmFillingView,
-    MSClusterView, MSStockTransferHistoryByDBSView
+    MSClusterView, MSStockTransferHistoryByDBSView, MSPendingArrivalsView
 )
 from .eic_management_views import EICVehicleQueueView, EICClusterViewSet, EICStockTransferMSDBSView, EICStockTransfersByDBSView
 
@@ -69,6 +78,7 @@ urlpatterns = [
     
     # Driver API
     path('driver/location', DriverLocationView.as_view()),
+    path('driver/pending-offers', DriverTripViewSet.as_view({'get': 'pending_offers'}), name='driver-pending-offers'),
     path('driver/arrival/ms', DriverTripViewSet.as_view({'post': 'arrival_at_ms'})),
     path('driver/arrival/dbs', DriverTripViewSet.as_view({'post': 'arrival_at_dbs'})), 
     path('driver/meter-reading/confirm', DriverTripViewSet.as_view({'post': 'confirm_meter_reading'})),
@@ -76,6 +86,7 @@ urlpatterns = [
     path('driver/emergency', EmergencyReportView.as_view()),
     path('driver/trip/status', TripViewSet.as_view({'get': 'status'})),
     path('driver/<int:pk>/token', DriverViewSet.as_view({'get': 'token'})),
+    path('driver/trips', DriverViewSet.as_view({'get': 'current_driver_trips'})),
     path('driver/<int:pk>/trips', DriverViewSet.as_view({'get': 'trips'})),
     
     # Driver Notification Registration
@@ -100,6 +111,9 @@ urlpatterns = [
     path('ms/notifications/register', MSNotificationRegisterView.as_view(), name='ms-notif-register'),
     path('ms/notifications/unregister', MSNotificationUnregisterView.as_view(), name='ms-notif-unregister'),
     
+    # MS Pending Arrivals (fallback for missed notifications)
+    path('ms/pending-arrivals', MSPendingArrivalsView.as_view(), name='ms-pending-arrivals'),
+    
     # EIC Management
     path('eic/vehicle-queue', EICVehicleQueueView.as_view(), name='eic-vehicle-queue'),
 
@@ -107,11 +121,23 @@ urlpatterns = [
     path('dbs/notifications/register', DBSNotificationRegisterView.as_view(), name='dbs-notif-register'),
     path('dbs/notifications/unregister', DBSNotificationUnregisterView.as_view(), name='dbs-notif-unregister'),
     
+    # DBS Pending Arrivals (fallback for missed notifications)
+    path('dbs/pending-arrivals', DBSPendingArrivalsView.as_view(), name='dbs-pending-arrivals'),
+    
     # DBS Stock Requests apps
     path('dbs/stock-requests', DBSStockRequestViewSet.as_view({'get': 'list'}), name='dbs-stock-requests'),
     path('dbs/stock-requests/arrival/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_arrival'}), name='dbs-stock-request-confirm-arrival'),
     path('dbs/stock-requests/decant/start', DBSStockRequestViewSet.as_view({'post': 'decant_start'}), name='dbs-decant-start'),
     path('dbs/stock-requests/decant/end', DBSStockRequestViewSet.as_view({'post': 'decant_end'}), name='dbs-decant-end'),
     path('dbs/stock-requests/decant/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_decanting'}), name='dbs-decant-confirm'),
+
+    # Customer API (DBS-facing) - DBS resolved from token
+    path('customer/dashboard', CustomerDashboardView.as_view(), name='customer-dashboard'),
+    path('customer/stocks', CustomerStocksView.as_view(), name='customer-stocks'),
+    path('customer/transport', CustomerTransportView.as_view(), name='customer-transport'),
+    path('customer/transfers', CustomerTransfersView.as_view(), name='customer-transfers'),
+    path('customer/pending-trips', CustomerPendingTripsView.as_view(), name='customer-pending-trips'),
+    path('customer/permissions', CustomerPermissionsView.as_view(), name='customer-permissions'),
+    path('customer/trips/<int:trip_id>/accept', CustomerTripAcceptView.as_view(), name='customer-trip-accept'),
 ]
 

@@ -762,7 +762,7 @@ class EICNetworkOverviewView(views.APIView):
                     'dbsId': trip.dbs.code if trip.dbs else None,
                     'dbsName': trip.dbs.name if trip.dbs else None,
                     'status': trip.status,
-                    'scheduledTime': trip.started_at.isoformat() if trip.started_at else None,
+                    'scheduledTime': timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
                     'driverName': trip.driver.full_name if trip.driver else None,
                     'vehicleNumber': trip.vehicle.registration_no if trip.vehicle else None,
                 })
@@ -788,7 +788,7 @@ class EICNetworkOverviewView(views.APIView):
                     'dbsId': dbs.code,
                     'dbsName': dbs.name,
                     'status': trip.status,
-                    'scheduledTime': trip.started_at.isoformat() if trip.started_at else None,
+                    'scheduledTime': timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
                     'driverName': trip.driver.full_name if trip.driver else None,
                     'vehicleNumber': trip.vehicle.registration_no if trip.vehicle else None,
                 })
@@ -929,7 +929,7 @@ class EICReconciliationActionView(views.APIView):
                 'actionId': f'ACT-{rec.id}-{timezone.now().strftime("%H%M%S")}',
                 'actionType': action_type,
                 'status': 'PENDING',
-                'triggeredAt': timezone.now().isoformat()
+                'triggeredAt': timezone.localtime(timezone.now()).isoformat()
             }
         })
 
@@ -1006,12 +1006,12 @@ class EICVehicleTrackingView(views.APIView):
                 'currentLocation': current_location,
                 'destination': destination,
                 'speed': 0 if route_status == 'ARRIVED' else 45,  # Simulated
-                'eta': (timezone.now() + timezone.timedelta(hours=1)).isoformat(),  # Simulated
+                'eta': timezone.localtime(timezone.now() + timezone.timedelta(hours=1)).isoformat(),  # Simulated
                 'fuelLevel': 75,  # Simulated (no VTS)
                 'status': route_status,
                 'routeAdherence': 'ON_ROUTE',  # No VTS to detect deviation
                 'deviationDistance': 0,
-                'lastUpdated': timezone.now().isoformat(),
+                'lastUpdated': timezone.localtime(timezone.now()).isoformat(),
                 'tripStatus': trip.status
             })
         
@@ -1055,7 +1055,7 @@ class EICVehicleQueueView(views.APIView):
                 'driverName': trip.driver.name if trip.driver else 'Unknown',
                 'cargoType': 'LPG',
                 'quantity': f'{trip.scheduled_quantity or 0} KL',
-                'arrivalTime': (trip.ms_arrival_at or trip.dbs_arrival_at or timezone.now()).isoformat(),
+                'arrivalTime': timezone.localtime(trip.ms_arrival_at or trip.dbs_arrival_at or timezone.now()).isoformat(),
                 'estimatedWaitTime': f'{idx * 30} min',  # Simulated
                 'status': 'loading' if trip.status in ['FILLING', 'DECANTING'] else 'waiting',
                 'bayAssigned': None,  # Would come from bay management
@@ -1114,7 +1114,7 @@ class EICIncomingStockRequestsView(views.APIView):
                 'dbsName': req.dbs.name if req.dbs else None,
                 'quantity': req.quantity,
                 'product': 'LPG',
-                'requestedAt': req.created_at.isoformat(),
+                'requestedAt': timezone.localtime(req.created_at).isoformat(),
                 'notes': req.notes or '',
                 'requestedBy': req.requested_by_user.username if req.requested_by_user else None
             })

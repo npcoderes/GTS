@@ -48,7 +48,7 @@ class EICVehicleQueueView(views.APIView):
                 'driverName': trip.driver.user.full_name if trip.driver else 'Unassigned',
                 'destination': trip.dbs.name,
                 'status': trip.status,
-                'arrivalTime': trip.origin_confirmed_at.isoformat() if trip.origin_confirmed_at else None,
+                'arrivalTime': timezone.localtime(trip.origin_confirmed_at).isoformat() if trip.origin_confirmed_at else None,
                 'position': queue_by_ms[ms_name]['totalVehicles']
             })
         
@@ -513,9 +513,9 @@ class EICStockTransfersByDBSView(views.APIView):
                 'productName': 'CNG',
                 'quantity': quantity,
                 'status': status_str,
-                'initiatedAt': trip.started_at.isoformat() if trip.started_at else None,
-                'completedAt': trip.completed_at.isoformat() if trip.completed_at else None,
-                'estimatedCompletion': trip.dbs_arrival_at.isoformat() if trip.dbs_arrival_at else None,
+                'initiatedAt': timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
+                'completedAt': timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
+                'estimatedCompletion': timezone.localtime(trip.dbs_arrival_at).isoformat() if trip.dbs_arrival_at else None,
                 'priority': priority,
                 'notes': trip.stock_request.approval_notes if trip.stock_request else None
             })

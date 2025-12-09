@@ -31,20 +31,40 @@ def get_primary_role(user):
     
     return roles.first() if roles.exists() else None
 
-def get_user_permissions(role_code):
+def get_user_permissions(role_code, user=None):
     """
-    Get permissions based on role code (from BPB)
+    Get permissions based on role code.
+    Uses database-driven permissions with fallback to hardcoded defaults.
+    
+    Args:
+        role_code: The primary role code of the user
+        user: Optional User object for database permission lookup
     """
-    permissions = {
+    # Default permissions structure
+    default_permissions = {
         'can_raise_manual_request': False,
         'can_confirm_arrival': False,
         'can_record_readings': False,
         'can_start_filling': False,
         'can_approve_request': False,
         'can_manage_drivers': False,
-        'can_view_trips': True, # Base permission
-        'can_override_tokens': False
+        'can_view_trips': True,  # Base permission
+        'can_override_tokens': False,
+        'can_manage_clusters': False,
     }
+    
+    # If we have a user object, try to get permissions from database
+    if user:
+        try:
+            from core.permission_views import get_user_permissions_from_db
+            db_permissions = get_user_permissions_from_db(user)
+            if db_permissions:
+                return db_permissions
+        except Exception:
+            pass  # Fall back to hardcoded permissions
+    
+    # Fallback to hardcoded role-based permissions
+    permissions = default_permissions.copy()
     
     if role_code == 'DBS_OPERATOR':
         permissions.update({
@@ -65,6 +85,9 @@ def get_user_permissions(role_code):
             'can_override_tokens': True,
             'can_manage_clusters': True,
         })
+    elif role_code == 'SUPER_ADMIN':
+        # Super admin gets all permissions
+        permissions = {key: True for key in permissions}
     elif role_code == 'VENDOR':
         permissions.update({
             'can_manage_drivers': True
@@ -104,7 +127,7 @@ def login_view(request):
                 'dbsName': station.name if station and station.type == 'DBS' else None,
                 'msId': station.id if station and station.type == 'MS' else None,
                 'msName': station.name if station and station.type == 'MS' else None,
-                'permissions': get_user_permissions(role_code)
+                'permissions': get_user_permissions(role_code, user)
             }
             
             # Log successful login

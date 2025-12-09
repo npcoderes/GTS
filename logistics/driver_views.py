@@ -2,15 +2,90 @@ from rest_framework import viewsets, status, views
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from .models import StockRequest, Trip, Shift, Token
 import json
-import logging 
+import logging
+import uuid 
 logger = logging.getLogger(__name__)
+
+# Get assignment timeout from settings (default 5 minutes)
+DRIVER_ASSIGNMENT_TIMEOUT = getattr(settings, 'DRIVER_ASSIGNMENT_TIMEOUT_SECONDS', 300)
+
+
 class DriverTripViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['get'], url_path='pending-offers')
+    def pending_offers(self, request):
+        """
+        Get pending trip offers assigned to this driver.
+        
+        GET /api/driver/trips/pending-offers/
+        
+        Returns list of stock requests that are:
+        - Status = ASSIGNING
+        - target_driver = current driver
+        - Not expired (within timeout window)
+        
+        This is the "pull" mechanism for when driver clears notification
+        and opens the app - they can still see their pending offers.
+        """
+        driver = getattr(request.user, 'driver_profile', None)
+        if not driver:
+            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+        
+        now = timezone.now()
+        
+        # Find pending offers for this driver
+        pending_requests = StockRequest.objects.filter(
+            status='ASSIGNING',
+            target_driver=driver
+        ).select_related('dbs', 'dbs__parent_station')
+        
+        offers = []
+        for req in pending_requests:
+            # Check if expired
+            is_expired = False
+            remaining_seconds = DRIVER_ASSIGNMENT_TIMEOUT
+            
+            if req.assignment_started_at:
+                elapsed = (now - req.assignment_started_at).total_seconds()
+                remaining_seconds = max(0, DRIVER_ASSIGNMENT_TIMEOUT - elapsed)
+                if elapsed > DRIVER_ASSIGNMENT_TIMEOUT:
+                    is_expired = True
+                    # Skip expired offers (Celery will clean them up)
+                    continue
+            
+            ms = req.dbs.parent_station if req.dbs else None
+            
+            offers.append({
+                'stock_request_id': req.id,
+                'dbs': {
+                    'id': req.dbs.id if req.dbs else None,
+                    'name': req.dbs.name if req.dbs else None,
+                    'address': req.dbs.address if req.dbs else None,
+                },
+                'ms': {
+                    'id': ms.id if ms else None,
+                    'name': ms.name if ms else None,
+                    'address': ms.address if ms else None,
+                } if ms else None,
+                'quantity_kg': float(req.requested_qty_kg) if req.requested_qty_kg else None,
+                'priority': req.priority_preview,
+                'assigned_at': req.assignment_started_at.isoformat() if req.assignment_started_at else None,
+                'remaining_seconds': int(remaining_seconds),
+                'expires_in': f"{int(remaining_seconds // 60)}m {int(remaining_seconds % 60)}s",
+            })
+        
+        return Response({
+            'pending_offers': offers,
+            'count': len(offers),
+            'timeout_seconds': DRIVER_ASSIGNMENT_TIMEOUT
+        })
 
     @action(detail=False, methods=['post'], url_path='accept')
     def accept_trip(self, request):
@@ -42,15 +117,20 @@ class DriverTripViewSet(viewsets.ViewSet):
                         'current_status': stock_req.status
                     }, status=status.HTTP_400_BAD_REQUEST)
                     
-                # 2. Validate Timeout (5 minutes)
+                # 2. Validate Timeout
                 if stock_req.assignment_started_at:
                     elapsed = (timezone.now() - stock_req.assignment_started_at).total_seconds()
-                    if elapsed > 300:  # 5 minutes
-                        stock_req.status = 'APPROVED'  # Reset for EIC to reassign
+                    if elapsed > DRIVER_ASSIGNMENT_TIMEOUT:
+                        # Reset to PENDING for EIC to reassign
+                        stock_req.status = 'PENDING'
                         stock_req.assignment_started_at = None
                         stock_req.target_driver = None
                         stock_req.save()
-                        return Response({'error': 'Offer expired'}, status=status.HTTP_400_BAD_REQUEST)
+                        logger.warning(f"Driver {driver.id} tried to accept expired offer for StockRequest {stock_req.id} (elapsed: {elapsed:.0f}s)")
+                        return Response({
+                            'error': 'Offer has expired. The 5-minute acceptance window has passed.',
+                            'expired': True
+                        }, status=status.HTTP_400_BAD_REQUEST)
                      
                 # 3. Validate Target Driver (Must be assigned to this driver)
                 if stock_req.target_driver and stock_req.target_driver != driver:
@@ -214,7 +294,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     }, status=status.HTTP_403_FORBIDDEN)
                 
                 # Reset the stock request for EIC to reassign
-                stock_req.status = 'PENDING'  # Go back to pending
+                stock_req.status = 'PENDING'
                 stock_req.assignment_started_at = None
                 stock_req.target_driver = None
                 stock_req.assignment_mode = None
@@ -297,7 +377,7 @@ class DriverTripViewSet(viewsets.ViewSet):
             
             if trip.status == 'PENDING':
                 trip.status = 'AT_MS'
-                trip.ms_arrival_at = timezone.now() 
+                trip.origin_confirmed_at = timezone.now() 
                 trip.save()
                 
                 # Notify MS Operator
@@ -426,8 +506,18 @@ class DriverTripViewSet(viewsets.ViewSet):
                 try:
                     import base64
                     from django.core.files.base import ContentFile
-                    format, imgstr = photo_base64.split(';base64,') 
-                    ext = format.split('/')[-1] 
+                    
+                    # Handle both formats:
+                    # 1. "data:image/png;base64,<base64_data>" (with prefix)
+                    # 2. "<base64_data>" (raw base64 string)
+                    if ';base64,' in photo_base64:
+                        format, imgstr = photo_base64.split(';base64,')
+                        ext = format.split('/')[-1] if '/' in format else 'jpg'
+                    else:
+                        # Raw base64 string without prefix, default to jpg
+                        imgstr = photo_base64
+                        ext = 'jpg'
+                    
                     file_name = f"reading_{trip.id}_{station_type}_{reading_type}_{uuid.uuid4().hex[:6]}.{ext}"
                     photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
                 except Exception as e:
@@ -481,8 +571,8 @@ class DriverTripViewSet(viewsets.ViewSet):
                         
                     if request.data.get('confirmed'):
                         decanting.confirmed_by_driver = request.user
-                        trip.status = 'COMPLETED'
-                        trip.completed_at = timezone.now()
+                        trip.status = 'DECANTING_CONFIRMED'
+                        trip.dbs_departure_at = timezone.now()
                         trip.save()
                 decanting.save()
                 
@@ -492,45 +582,3 @@ class DriverTripViewSet(viewsets.ViewSet):
              return Response({'error': 'Trip not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
              return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                
-
-
-    @action(detail=False, methods=['get'], url_path='pending')
-    def pending_offers(self, request):
-        """
-        Get pending trip offers for the current driver.
-        
-        GET /api/driver/trips/pending/
-        """
-        driver = getattr(request.user, 'driver_profile', None)
-        if not driver:
-            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
-        
-        # Find offers assigned to this driver
-        pending_offers = StockRequest.objects.filter(
-            status='ASSIGNING',
-            target_driver=driver
-        ).select_related('dbs', 'dbs__parent_station')
-        
-        offers = []
-        for req in pending_offers:
-            # Check if not expired
-            if req.assignment_started_at:
-                elapsed = (timezone.now() - req.assignment_started_at).total_seconds()
-                if elapsed > 300:  # Expired
-                    continue
-            
-            offers.append({
-                'stock_request_id': req.id,
-                'dbs_name': req.dbs.name if req.dbs else 'Unknown',
-                'ms_name': req.dbs.parent_station.name if req.dbs and req.dbs.parent_station else 'Unknown',
-                'quantity_kg': float(req.requested_qty_kg),
-                'priority': req.priority_preview,
-                'requested_at': req.created_at.isoformat(),
-                'expires_in_seconds': max(0, 300 - int(elapsed)) if req.assignment_started_at else 300
-            })
-        
-        return Response({
-            'pending_offers': offers,
-            'count': len(offers)
-        })
