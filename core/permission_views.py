@@ -8,15 +8,71 @@ from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
+from django.utils import timezone
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 from .permission_models import Permission, RolePermission, UserPermission, DEFAULT_ROLE_PERMISSIONS
 from .permission_serializers import (
-    PermissionSerializer, 
+    PermissionSerializer,
     RolePermissionSerializer, RolePermissionCreateSerializer,
     UserPermissionSerializer, UserPermissionCreateSerializer,
     RoleWithPermissionsSerializer
 )
 from .models import Role, User
+
+
+def notify_user_permission_change(user_id):
+    """
+    Send WebSocket notification to a specific user about permission changes.
+    """
+    try:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                'type': 'permission.update',
+                'data': {
+                    'event_type': 'permissions_changed',
+                    'message': 'Your permissions have been updated. Please refresh.',
+                    'timestamp': str(timezone.now())
+                }
+            }
+        )
+    except Exception as e:
+        # Log but don't fail the request if WebSocket fails
+        print(f"WebSocket notification failed for user {user_id}: {e}")
+
+
+def notify_role_users_permission_change(role):
+    """
+    Send WebSocket notification to all users with a specific role about permission changes.
+    """
+    try:
+        # Get all users with this role (active role assignments)
+        from core.models import UserRole
+        user_ids = UserRole.objects.filter(
+            role=role,
+            active=True
+        ).values_list('user_id', flat=True)
+
+        channel_layer = get_channel_layer()
+        for user_id in user_ids:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    'type': 'permission.update',
+                    'data': {
+                        'event_type': 'permissions_changed',
+                        'message': f'Your role ({role.name}) permissions have been updated. Please refresh.',
+                        'role': role.code,
+                        'timestamp': str(timezone.now())
+                    }
+                }
+            )
+    except Exception as e:
+        # Log but don't fail the request if WebSocket fails
+        print(f"WebSocket notification failed for role {role.code}: {e}")
 
 
 def get_user_permissions_from_db(user):
@@ -202,7 +258,10 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
                 created.append(perm_code)
             else:
                 updated.append(perm_code)
-        
+
+        # Notify all users with this role about permission changes
+        notify_role_users_permission_change(role)
+
         return Response({
             'success': True,
             'role': role.code,
@@ -296,7 +355,10 @@ class UserPermissionViewSet(viewsets.ModelViewSet):
                     created.append(perm_code)
                 else:
                     updated.append(perm_code)
-        
+
+        # Notify the user about their permission changes
+        notify_user_permission_change(user_id)
+
         return Response({
             'success': True,
             'user_id': user_id,
