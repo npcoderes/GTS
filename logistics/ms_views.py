@@ -290,9 +290,11 @@ class MSFillStartView(views.APIView):
         if pressure: filling.prefill_pressure_bar = pressure
         if mfm: filling.prefill_mfm = mfm
         filling.save()
-        
-        # Update trip status
+
+        # Update trip status and step tracking
         trip.status = 'FILLING'
+        trip.current_step = 3  # Step 3: MS Filling in progress
+        trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}
         trip.save()
 
         # Send WebSocket update to Driver
@@ -357,12 +359,13 @@ class MSFillEndView(views.APIView):
             try:
                 filling.filled_qty_kg = float(filling.postfill_mfm) - float(filling.prefill_mfm)
             except ValueError:
-                pass 
-        
+                pass
+
         filling.save()
-        
-        # Update trip status
+
+        # Update trip status and step tracking
         trip.status = 'FILLED'
+        trip.step_data = {**trip.step_data, 'ms_post_reading_done': True}
         trip.save()
 
         # Send WebSocket update to Driver
@@ -418,19 +421,21 @@ class MSConfirmFillingView(views.APIView):
         if delivered_qty:
              filling.filled_qty_kg = delivered_qty
              filling.save()
-        
+
         # Generate STO logic here or just mark status?
         # User says "Operation confirmed" -> status: COMPLETED (or similar)
-        # We will set to DISPATCHED as it leaves MS? 
+        # We will set to DISPATCHED as it leaves MS?
         # But payload expectation says "trip": {"status": "COMPLETED"}
         # Let's verify if COMPLETED is appropriate. If it's the *filling* completion, maybe FILLED is enough?
-        # If the trip is starting, DISPATCHED is the correct flow. 
-        # But if the user wants "COMPLETED" in response, we can send that string key for frontend 
+        # If the trip is starting, DISPATCHED is the correct flow.
+        # But if the user wants "COMPLETED" in response, we can send that string key for frontend
         # while keeping internal status correct.
-        
+
         trip.status = 'DISPATCHED'
         trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
         trip.ms_departure_at = timezone.now()
+        trip.current_step = 4  # Step 4: Departed MS, heading to DBS
+        trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
         trip.save()
         
         return Response({

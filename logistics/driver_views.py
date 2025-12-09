@@ -175,7 +175,10 @@ class DriverTripViewSet(viewsets.ViewSet):
                     vehicle=active_shift.vehicle,
                     ms=ms,
                     dbs=stock_req.dbs,
-                    status='PENDING'
+                    status='PENDING',
+                    started_at=timezone.now(),
+                    current_step=1,  # Step 1: Trip accepted
+                    step_data={'trip_accepted': True}
                 )
                 
                 # 7. Update StockRequest
@@ -377,7 +380,9 @@ class DriverTripViewSet(viewsets.ViewSet):
             
             if trip.status == 'PENDING':
                 trip.status = 'AT_MS'
-                trip.origin_confirmed_at = timezone.now() 
+                trip.origin_confirmed_at = timezone.now()
+                trip.current_step = 2  # Step 2: Arrived at MS
+                trip.step_data = {**trip.step_data, 'arrived_at_ms': True}
                 trip.save()
                 
                 # Notify MS Operator
@@ -441,6 +446,8 @@ class DriverTripViewSet(viewsets.ViewSet):
             if trip.status == 'IN_TRANSIT' or trip.status == 'DISPATCHED':
                 trip.status = 'AT_DBS'
                 trip.dbs_arrival_at = timezone.now()
+                trip.current_step = 5  # Step 5: Arrived at DBS / Decanting process
+                trip.step_data = {**trip.step_data, 'arrived_at_dbs': True}
                 trip.save()
                 
                 # Send Notification to DBS Operator
@@ -479,6 +486,80 @@ class DriverTripViewSet(viewsets.ViewSet):
             
         except Trip.DoesNotExist:
              return Response({'error': 'Active trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['get'], url_path='resume')
+    def resume_trip(self, request):
+        """
+        Resume trip - Get current trip state for driver when app reopens.
+
+        GET /api/driver-trips/resume/
+
+        Returns current trip progress including:
+        - Current step (0-7)
+        - Partial progress data
+        - MS Filling details if in step 3
+        - DBS Decanting details if in step 5
+        """
+        driver = getattr(request.user, 'driver_profile', None)
+        if not driver:
+            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Find active trip for this driver
+        active_trip = Trip.objects.filter(
+            driver=driver,
+            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']
+        ).select_related(
+            'token', 'vehicle', 'ms', 'dbs', 'stock_request'
+        ).prefetch_related(
+            'ms_fillings', 'dbs_decantings'
+        ).first()
+
+        if not active_trip:
+            return Response({
+                'hasActiveTrip': False,
+                'message': 'No active trip found'
+            })
+
+        # Calculate current step and get detailed information
+        step_details = active_trip.get_step_details()
+
+        # Build comprehensive response
+        response_data = {
+            'hasActiveTrip': True,
+            'trip': {
+                'id': active_trip.id,
+                'token': step_details.get('token'),
+                'currentStep': step_details['current_step'],
+                'stepData': step_details['step_data'],
+                'status': active_trip.status,
+                'tripDetails': {
+                    'stockRequestId': active_trip.stock_request.id if active_trip.stock_request else None,
+                    'ms': {
+                        'id': active_trip.ms.id,
+                        'name': active_trip.ms.name,
+                        'code': active_trip.ms.code,
+                        'address': active_trip.ms.address or active_trip.ms.city or '',
+                    },
+                    'dbs': {
+                        'id': active_trip.dbs.id,
+                        'name': active_trip.dbs.name,
+                        'code': active_trip.dbs.code,
+                        'address': active_trip.dbs.address or active_trip.dbs.city or '',
+                    },
+                    'vehicle': {
+                        'id': active_trip.vehicle.id,
+                        'registrationNo': active_trip.vehicle.registration_no,
+                        'capacity_kg': str(active_trip.vehicle.capacity_kg),
+                    },
+                    'started_at': active_trip.started_at.isoformat() if active_trip.started_at else None,
+                    'sto_number': active_trip.sto_number,
+                },
+                'msFillingData': step_details.get('ms_filling'),
+                'dbsDecantingData': step_details.get('dbs_decanting'),
+            }
+        }
+
+        return Response(response_data)
 
     @action(detail=False, methods=['post'], url_path='meter-reading/confirm')
     def confirm_meter_reading(self, request):
@@ -530,50 +611,64 @@ class DriverTripViewSet(viewsets.ViewSet):
             if station_type == 'MS':
                 # Ensure MSFilling record exists
                 filling, _ = MSFilling.objects.get_or_create(trip=trip)
-                
+
                 if reading_type == 'pre':
                     filling.prefill_pressure_bar = reading_val
                     filling.start_time = timezone.now()
                     if photo_file:
                         filling.prefill_photo = photo_file
+                    # Update step tracking
+                    trip.current_step = 3  # Step 3: MS Filling in progress
+                    trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
+                    trip.save()
                 elif reading_type == 'post':
                     filling.postfill_pressure_bar = reading_val
                     filling.end_time = timezone.now()
                     if photo_file:
                        filling.postfill_photo = photo_file
-                    
+                    # Update step tracking
+                    trip.step_data = {**trip.step_data, 'ms_post_reading_done': True, 'ms_post_photo_uploaded': bool(photo_file)}
+
                     if request.data.get('confirmed'):
                         filling.confirmed_by_driver = request.user
                         # Also update trip status if post-fill?
                         trip.status = 'IN_TRANSIT'
                         trip.ms_departure_at = timezone.now()
-                        trip.save()
+                        trip.current_step = 4  # Step 4: Heading to DBS
+                        trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+                    trip.save()
                 filling.save()
                 
             elif station_type == 'DBS':
                 # Ensure DBSDecanting record exists
                 decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
-                
+
                 if reading_type == 'pre':
                     decanting.pre_dec_reading = reading_val
                     decanting.start_time = timezone.now()
                     if photo_file:
                         decanting.pre_decant_photo = photo_file
-                        
+
                     trip.status = 'AT_DBS'
                     trip.dbs_arrival_at = timezone.now()
+                    trip.current_step = 5  # Step 5: DBS Decanting in progress
+                    trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'dbs_pre_photo_uploaded': bool(photo_file)}
                     trip.save()
                 elif reading_type == 'post':
                     decanting.post_dec_reading = reading_val
                     decanting.end_time = timezone.now()
                     if photo_file:
                         decanting.post_decant_photo = photo_file
-                        
+                    # Update step tracking
+                    trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True, 'dbs_post_photo_uploaded': bool(photo_file)}
+
                     if request.data.get('confirmed'):
                         decanting.confirmed_by_driver = request.user
                         trip.status = 'DECANTING_CONFIRMED'
                         trip.dbs_departure_at = timezone.now()
-                        trip.save()
+                        trip.current_step = 6  # Step 6: Navigate back to MS
+                        trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
+                    trip.save()
                 decanting.save()
                 
             return Response({"success": True})

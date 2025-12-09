@@ -153,20 +153,23 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         from .models import DBSDecanting
         decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
         decanting.start_time = timezone.now()
-        
+
         if pressure:
             decanting.pre_dec_pressure_bar = pressure
         if mfm:
-            decanting.pre_dec_reading = mfm # Using pre_dec_reading for MFM as generic, or should we use a new field? 
-            # User asked for 'prefill_mfm' (MS) vs 'pre_dec_pressure'. 
+            decanting.pre_dec_reading = mfm # Using pre_dec_reading for MFM as generic, or should we use a new field?
+            # User asked for 'prefill_mfm' (MS) vs 'pre_dec_pressure'.
             # Checking models: DBSDecanting has `pre_dec_pressure_bar` and `pre_dec_reading`.
-            # We will use pre_dec_reading for MFM values if not specified otherwise, or add a field if needed. 
+            # We will use pre_dec_reading for MFM values if not specified otherwise, or add a field if needed.
             # For now mapping 'mfm' to 'pre_dec_reading'.
             pass
 
         decanting.save()
-        
-        decanting.save()
+
+        # Update trip step tracking
+        trip.current_step = 5  # Step 5: DBS Decanting in progress
+        trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True}
+        trip.save()
         
         # Send WebSocket update to Driver
         try:
@@ -222,8 +225,10 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             decanting.post_dec_reading = mfm
 
         decanting.save()
-        
-        decanting.save()
+
+        # Update trip step tracking
+        trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True}
+        trip.save()
         
         # Send WebSocket update to Driver
         try:
@@ -274,19 +279,21 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         decanting.delivered_qty_kg = delivered_qty
         decanting.confirmed_by_dbs_operator = request.user
         decanting.save()
-        
+
         # Determine strict status. User said "driver will go back to MS then this trip will complete".
         # So we mark it as 'DBS_COMPLETED' or 'RETURN_TO_MS'.
-        # However, for now, to ensure flow continues, let's use 'COMPLETED' for the *Task* of decanting, 
-        # and maybe 'RETURN_TO_MS' for the trip status? 
+        # However, for now, to ensure flow continues, let's use 'COMPLETED' for the *Task* of decanting,
+        # and maybe 'RETURN_TO_MS' for the trip status?
         # Existing flow uses 'COMPLETED'. Let's stick to 'DECANTING_CONFIRMED' to be safe or 'COMPLETED' if that closes the stock request.
         # Check StockRequest update requirement from previous context ("update StockRequest status to COMPLETED").
-        
+
         if trip.stock_request:
             trip.stock_request.status = 'COMPLETED'
             trip.stock_request.save()
-            
-        trip.status = 'DECANTING_CONFIRMED' 
+
+        trip.status = 'DECANTING_CONFIRMED'
+        trip.current_step = 6  # Step 6: Navigate back to MS
+        trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
         trip.save()
         
         return Response({

@@ -187,8 +187,122 @@ class Trip(models.Model):
     route_deviation = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Step tracking for driver app resume functionality
+    current_step = models.IntegerField(default=0)  # 0-7: tracks current trip step
+    step_data = models.JSONField(default=dict, blank=True)  # Stores partial progress data
+    last_activity_at = models.DateTimeField(auto_now=True)  # Auto-updated on any change
+
     class Meta:
         db_table = 'trips'
+
+    def calculate_current_step(self):
+        """
+        Auto-calculate current step based on trip state.
+        Used by resume API to ensure accuracy.
+
+        Step Mapping:
+        0: No trip / Initial state
+        1: Trip accepted (status=PENDING)
+        2: Arrived at MS (status=AT_MS)
+        3: MS Filling in progress (has MSFilling record)
+        4: Departed MS, heading to DBS (status=IN_TRANSIT/DISPATCHED)
+        5: At DBS / Decanting in progress (status=AT_DBS or has DBSDecanting)
+        6: Decanting confirmed, navigating back to MS (status=DECANTING_CONFIRMED)
+        7: Trip completion screen (status=COMPLETED)
+        """
+        # Cancelled trips reset to 0
+        if self.status == 'CANCELLED':
+            return 0
+
+        # Completed trips are at step 7
+        if self.status == 'COMPLETED':
+            return 7
+
+        # Decanting confirmed, navigating back to MS (step 6)
+        if self.status == 'DECANTING_CONFIRMED':
+            return 6
+
+        # Check if at DBS or decanting (step 5)
+        if self.status == 'AT_DBS' or self.dbs_decantings.exists():
+            # If decanting confirmed by operator, move to step 6
+            if self.dbs_decantings.filter(confirmed_by_dbs_operator__isnull=False).exists():
+                return 6
+            return 5
+
+        # Check if left MS and heading to DBS (step 4)
+        if self.status == 'IN_TRANSIT' or self.ms_departure_at:
+            return 4
+
+        # Check if at MS or filling in progress (step 3)
+        if self.status == 'AT_MS' or self.ms_fillings.exists():
+            # If already left MS, should be step 4
+            if self.ms_departure_at:
+                return 4
+            # If at MS or filling in progress
+            return 3 if self.ms_fillings.exists() else 2
+
+        # Arrived at MS (step 2)
+        if self.origin_confirmed_at:
+            return 2
+
+        # Trip accepted (step 1)
+        if self.started_at:
+            return 1
+
+        # No active trip (step 0)
+        return 0
+
+    def get_step_details(self):
+        """
+        Get detailed step information including substep progress.
+        Returns comprehensive data for resume functionality.
+        """
+        step = self.calculate_current_step()
+        details = {
+            'current_step': step,
+            'step_data': self.step_data,
+            'trip_id': self.id,
+            'token': self.token.token_no if self.token else None,
+            'status': self.status,
+        }
+
+        # Step 3: MS Filling details
+        if step == 3:
+            ms_filling = self.ms_fillings.first()
+            if ms_filling:
+                details['ms_filling'] = {
+                    'id': ms_filling.id,
+                    'prefill_pressure_bar': str(ms_filling.prefill_pressure_bar) if ms_filling.prefill_pressure_bar else None,
+                    'prefill_mfm': str(ms_filling.prefill_mfm) if ms_filling.prefill_mfm else None,
+                    'postfill_pressure_bar': str(ms_filling.postfill_pressure_bar) if ms_filling.postfill_pressure_bar else None,
+                    'postfill_mfm': str(ms_filling.postfill_mfm) if ms_filling.postfill_mfm else None,
+                    'filled_qty_kg': str(ms_filling.filled_qty_kg) if ms_filling.filled_qty_kg else None,
+                    'prefill_photo_url': ms_filling.prefill_photo.url if ms_filling.prefill_photo else None,
+                    'postfill_photo_url': ms_filling.postfill_photo.url if ms_filling.postfill_photo else None,
+                    'confirmed_by_ms_operator': ms_filling.confirmed_by_ms_operator_id is not None,
+                    'start_time': ms_filling.start_time.isoformat() if ms_filling.start_time else None,
+                    'end_time': ms_filling.end_time.isoformat() if ms_filling.end_time else None,
+                }
+
+        # Step 5: DBS Decanting details
+        if step == 5:
+            dbs_decanting = self.dbs_decantings.first()
+            if dbs_decanting:
+                details['dbs_decanting'] = {
+                    'id': dbs_decanting.id,
+                    'pre_dec_pressure_bar': str(dbs_decanting.pre_dec_pressure_bar) if dbs_decanting.pre_dec_pressure_bar else None,
+                    'pre_dec_reading': str(dbs_decanting.pre_dec_reading) if dbs_decanting.pre_dec_reading else None,
+                    'post_dec_pressure_bar': str(dbs_decanting.post_dec_pressure_bar) if dbs_decanting.post_dec_pressure_bar else None,
+                    'post_dec_reading': str(dbs_decanting.post_dec_reading) if dbs_decanting.post_dec_reading else None,
+                    'delivered_qty_kg': str(dbs_decanting.delivered_qty_kg) if dbs_decanting.delivered_qty_kg else None,
+                    'pre_decant_photo_url': dbs_decanting.pre_decant_photo.url if dbs_decanting.pre_decant_photo else None,
+                    'post_decant_photo_url': dbs_decanting.post_decant_photo.url if dbs_decanting.post_decant_photo else None,
+                    'confirmed_by_dbs_operator': dbs_decanting.confirmed_by_dbs_operator_id is not None,
+                    'start_time': dbs_decanting.start_time.isoformat() if dbs_decanting.start_time else None,
+                    'end_time': dbs_decanting.end_time.isoformat() if dbs_decanting.end_time else None,
+                }
+
+        return details
 
 class MSFilling(models.Model):
     """
