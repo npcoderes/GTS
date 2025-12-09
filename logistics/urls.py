@@ -24,9 +24,9 @@ from .dbs_views import DBSDashboardView, DBSPendingArrivalsView
 from .dbs_views import DBSStockTransferListView, DBSStockRequestViewSet
 from .driver_views import DriverTripViewSet
 from .ms_views import (
-    MSFillPrefillView, MSFillStartView, MSFillEndView, MSStockTransferListView, 
+    MSFillPrefillView, MSFillStartView, MSFillEndView, MSStockTransferListView,
     MSTripScheduleView, MSDashboardView, MSConfirmArrivalView, MSConfirmFillingView,
-    MSClusterView, MSStockTransferHistoryByDBSView, MSPendingArrivalsView
+    MSClusterView, MSStockTransferHistoryByDBSView, MSPendingArrivalsView, MSFillResumeView
 )
 from .eic_management_views import EICVehicleQueueView, EICClusterViewSet, EICStockTransferMSDBSView, EICStockTransfersByDBSView
 
@@ -96,6 +96,7 @@ urlpatterns = [
     # MS API
     path('ms/dashboard/', MSDashboardView.as_view(), name='ms-dashboard'),
     path('ms/arrival/confirm', MSConfirmArrivalView.as_view(), name='ms-arrival-confirm'),
+    path('ms/fill/resume', MSFillResumeView.as_view(), name='ms-fill-resume'),
     path('ms/fill/start', MSFillStartView.as_view(), name='ms-fill-start'),
     path('ms/fill/end', MSFillEndView.as_view(), name='ms-fill-end'),
     path('ms/fill/confirm', MSConfirmFillingView.as_view(), name='ms-fill-confirm'),

@@ -999,6 +999,279 @@ trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}  # Merges data
 
 ---
 
+## Operator Resume APIs
+
+In addition to the driver resume functionality, MS and DBS operators also need to retrieve partial filling/decanting data when they reopen their apps. This prevents data loss if an operator closes the app after entering pre-readings.
+
+### MS Operator Resume API
+
+#### `POST /api/ms/fill/resume`
+
+**Purpose:** Retrieve current MS filling state when operator reopens app
+
+**Request:**
+```json
+{
+  "tripToken": "A1B2C3D4E5F6"
+}
+```
+
+**Response (Has Filling Data):**
+```json
+{
+  "hasFillingData": true,
+  "tripToken": "A1B2C3D4E5F6",
+  "trip": {
+    "id": 123,
+    "status": "FILLING",
+    "currentStep": 3,
+    "stepData": {
+      "trip_accepted": true,
+      "arrived_at_ms": true,
+      "ms_pre_reading_done": true
+    },
+    "vehicle": {
+      "registrationNo": "ABC-1234",
+      "capacity_kg": "5000.00"
+    },
+    "driver": {
+      "name": "John Driver"
+    },
+    "route": {
+      "from": "Mother Station Alpha",
+      "to": "DBS Beta"
+    }
+  },
+  "fillingData": {
+    "id": 789,
+    "prefill_pressure_bar": "200.00",
+    "prefill_mfm": "1000.00",
+    "postfill_pressure_bar": null,
+    "postfill_mfm": null,
+    "filled_qty_kg": null,
+    "prefill_photo_url": "/media/ms_fillings/pre/reading_123_MS_pre_a1b2c3.jpg",
+    "postfill_photo_url": null,
+    "confirmed_by_ms_operator": false,
+    "start_time": "2025-12-09T10:45:00Z",
+    "end_time": null,
+    "has_prefill_data": true,
+    "has_postfill_data": false,
+    "is_complete": false
+  }
+}
+```
+
+**Response (No Filling Data Yet):**
+```json
+{
+  "hasFillingData": false,
+  "tripToken": "A1B2C3D4E5F6",
+  "trip": {
+    "id": 123,
+    "status": "AT_MS",
+    "currentStep": 2,
+    "vehicle": {
+      "registrationNo": "ABC-1234",
+      "capacity_kg": "5000.00"
+    },
+    "driver": {
+      "name": "John Driver"
+    },
+    "route": {
+      "from": "Mother Station Alpha",
+      "to": "DBS Beta"
+    }
+  }
+}
+```
+
+**Use Case:**
+- MS operator enters pre-reading (pressure: 200, MFM: 1000)
+- Operator closes app
+- Upon reopening, call resume API with tripToken
+- Display pre-filled values in form
+- Operator can continue with post-reading
+
+---
+
+### DBS Operator Resume API
+
+#### `POST /api/dbs/stock-requests/decant/resume`
+
+**Purpose:** Retrieve current DBS decanting state when operator reopens app
+
+**Request:**
+```json
+{
+  "tripToken": "A1B2C3D4E5F6"
+}
+```
+
+**Response (Has Decanting Data):**
+```json
+{
+  "hasDecantingData": true,
+  "tripToken": "A1B2C3D4E5F6",
+  "trip": {
+    "id": 123,
+    "status": "AT_DBS",
+    "currentStep": 5,
+    "stepData": {
+      "arrived_at_dbs": true,
+      "dbs_pre_reading_done": true
+    },
+    "vehicle": {
+      "registrationNo": "ABC-1234",
+      "capacity_kg": "5000.00"
+    },
+    "driver": {
+      "name": "John Driver"
+    },
+    "route": {
+      "from": "Mother Station Alpha",
+      "to": "DBS Beta"
+    }
+  },
+  "decantingData": {
+    "id": 890,
+    "pre_dec_pressure_bar": "250.00",
+    "pre_dec_reading": "6000.00",
+    "post_dec_pressure_bar": null,
+    "post_dec_reading": null,
+    "delivered_qty_kg": null,
+    "pre_decant_photo_url": "/media/dbs_decantings/pre/reading_123_DBS_pre_x1y2z3.jpg",
+    "post_decant_photo_url": null,
+    "confirmed_by_dbs_operator": false,
+    "start_time": "2025-12-09T12:15:00Z",
+    "end_time": null,
+    "has_pre_decant_data": true,
+    "has_post_decant_data": false,
+    "is_complete": false
+  }
+}
+```
+
+**Response (No Decanting Data Yet):**
+```json
+{
+  "hasDecantingData": false,
+  "tripToken": "A1B2C3D4E5F6",
+  "trip": {
+    "id": 123,
+    "status": "AT_DBS",
+    "currentStep": 5,
+    "vehicle": {
+      "registrationNo": "ABC-1234",
+      "capacity_kg": "5000.00"
+    },
+    "driver": {
+      "name": "John Driver"
+    },
+    "route": {
+      "from": "Mother Station Alpha",
+      "to": "DBS Beta"
+    }
+  }
+}
+```
+
+**Use Case:**
+- DBS operator enters pre-decant reading (pressure: 250, MFM: 6000)
+- Operator closes app
+- Upon reopening, call resume API with tripToken
+- Display pre-filled values in form
+- Operator can continue with post-decant reading
+
+---
+
+### Operator App Integration Example
+
+```javascript
+// MS Operator App - On App Launch
+async function onMSOperatorAppLaunch(tripToken) {
+  const response = await fetch('/api/ms/fill/resume', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ tripToken })
+  });
+
+  const data = await response.json();
+
+  if (data.hasFillingData) {
+    // Pre-fill form with existing data
+    const { fillingData } = data;
+
+    setPreFillPressure(fillingData.prefill_pressure_bar || '');
+    setPreFillMFM(fillingData.prefill_mfm || '');
+    setPostFillPressure(fillingData.postfill_pressure_bar || '');
+    setPostFillMFM(fillingData.postfill_mfm || '');
+
+    // Disable fields that already have data
+    setPreFieldsDisabled(fillingData.has_prefill_data);
+
+    // Show appropriate UI state
+    if (fillingData.is_complete) {
+      showCompletionScreen();
+    } else if (fillingData.has_postfill_data) {
+      showConfirmButton();
+    } else if (fillingData.has_prefill_data) {
+      showPostReadingForm();
+    } else {
+      showPreReadingForm();
+    }
+  } else {
+    // No data yet, show fresh form
+    showPreReadingForm();
+  }
+}
+
+// DBS Operator App - On App Launch
+async function onDBSOperatorAppLaunch(tripToken) {
+  const response = await fetch('/api/dbs/stock-requests/decant/resume', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ tripToken })
+  });
+
+  const data = await response.json();
+
+  if (data.hasDecantingData) {
+    // Pre-fill form with existing data
+    const { decantingData } = data;
+
+    setPreDecantPressure(decantingData.pre_dec_pressure_bar || '');
+    setPreDecantReading(decantingData.pre_dec_reading || '');
+    setPostDecantPressure(decantingData.post_dec_pressure_bar || '');
+    setPostDecantReading(decantingData.post_dec_reading || '');
+
+    // Disable fields that already have data
+    setPreFieldsDisabled(decantingData.has_pre_decant_data);
+
+    // Show appropriate UI state
+    if (decantingData.is_complete) {
+      showCompletionScreen();
+    } else if (decantingData.has_post_decant_data) {
+      showConfirmButton();
+    } else if (decantingData.has_pre_decant_data) {
+      showPostDecantForm();
+    } else {
+      showPreDecantForm();
+    }
+  } else {
+    // No data yet, show fresh form
+    showPreDecantForm();
+  }
+}
+```
+
+---
+
 ## API Endpoint Summary
 
 | Endpoint | Method | Purpose | Updates Step |
@@ -1013,18 +1286,26 @@ trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}  # Merges data
 | `/api/dbs/stock-requests/decant/start` | POST | DBS start decanting | Step 5 |
 | `/api/dbs/stock-requests/decant/end` | POST | DBS end decanting | Step 5 |
 | `/api/dbs/stock-requests/decant/confirm` | POST | DBS confirm decanting | Step 6 |
-| **`/api/driver-trips/resume/`** | **GET** | **Resume trip state** | **N/A (Read-only)** |
+| **`/api/driver-trips/resume/`** | **GET** | **Resume driver trip state** | **N/A (Read-only)** |
+| **`/api/ms/fill/resume`** | **POST** | **Resume MS filling state** | **N/A (Read-only)** |
+| **`/api/dbs/stock-requests/decant/resume`** | **POST** | **Resume DBS decanting state** | **N/A (Read-only)** |
 
 ---
 
 ## Conclusion
 
-The Driver Trip Step Persistence feature ensures that driver app state is preserved across app restarts, providing a robust and user-friendly experience. The implementation is backward compatible, requires no changes to existing workflows, and provides comprehensive step tracking with partial data preservation.
+The Driver Trip Step Persistence feature ensures that driver and operator app states are preserved across app restarts, providing a robust and user-friendly experience. The implementation includes:
+
+- **Driver Resume API**: Allows drivers to resume trips from where they left off
+- **MS Operator Resume API**: Allows MS operators to retrieve partial filling data (pre/post readings)
+- **DBS Operator Resume API**: Allows DBS operators to retrieve partial decanting data (pre/post readings)
+
+All implementations are backward compatible, require no changes to existing workflows, and provide comprehensive step tracking with partial data preservation. Photos, readings, and confirmation states are all preserved across app sessions.
 
 For questions or issues, please contact the development team.
 
 ---
 
-**Document Version:** 1.0
+**Document Version:** 1.1
 **Last Updated:** December 9, 2025
 **Author:** Development Team

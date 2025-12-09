@@ -134,6 +134,98 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             }
         })
 
+    @action(detail=False, methods=['post'], url_path='decant/resume')
+    def decant_resume(self, request):
+        """
+        Resume DBS Decanting - Get current decanting state when operator reopens app
+
+        POST /api/dbs/stock-requests/decant/resume
+        Payload: { "tripToken": "TOKEN123" }
+
+        Returns existing DBSDecanting data if operator closed app after entering pre-reading
+        """
+        token_val = request.data.get('tripToken')
+        if not token_val:
+            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            trip = Trip.objects.select_related(
+                'token', 'vehicle', 'driver', 'ms', 'dbs'
+            ).prefetch_related('dbs_decantings').get(token__token_no=token_val)
+
+            # Get DBSDecanting record if exists
+            from .models import DBSDecanting
+            decanting = trip.dbs_decantings.first()
+
+            if not decanting:
+                # No decanting record yet, return empty state
+                return Response({
+                    'hasDecantingData': False,
+                    'tripToken': token_val,
+                    'trip': {
+                        'id': trip.id,
+                        'status': trip.status,
+                        'currentStep': trip.current_step,
+                        'vehicle': {
+                            'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                            'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                        },
+                        'driver': {
+                            'name': trip.driver.full_name if trip.driver else None,
+                        },
+                        'route': {
+                            'from': trip.ms.name if trip.ms else None,
+                            'to': trip.dbs.name if trip.dbs else None,
+                        }
+                    }
+                })
+
+            # Return existing decanting data
+            return Response({
+                'hasDecantingData': True,
+                'tripToken': token_val,
+                'trip': {
+                    'id': trip.id,
+                    'status': trip.status,
+                    'currentStep': trip.current_step,
+                    'stepData': trip.step_data,
+                    'vehicle': {
+                        'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                        'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                    },
+                    'driver': {
+                        'name': trip.driver.full_name if trip.driver else None,
+                    },
+                    'route': {
+                        'from': trip.ms.name if trip.ms else None,
+                        'to': trip.dbs.name if trip.dbs else None,
+                    }
+                },
+                'decantingData': {
+                    'id': decanting.id,
+                    'pre_dec_pressure_bar': str(decanting.pre_dec_pressure_bar) if decanting.pre_dec_pressure_bar else None,
+                    'pre_dec_reading': str(decanting.pre_dec_reading) if decanting.pre_dec_reading else None,
+                    'post_dec_pressure_bar': str(decanting.post_dec_pressure_bar) if decanting.post_dec_pressure_bar else None,
+                    'post_dec_reading': str(decanting.post_dec_reading) if decanting.post_dec_reading else None,
+                    'delivered_qty_kg': str(decanting.delivered_qty_kg) if decanting.delivered_qty_kg else None,
+                    'pre_decant_photo_url': decanting.pre_decant_photo.url if decanting.pre_decant_photo else None,
+                    'post_decant_photo_url': decanting.post_decant_photo.url if decanting.post_decant_photo else None,
+                    'confirmed_by_dbs_operator': decanting.confirmed_by_dbs_operator_id is not None,
+                    'start_time': decanting.start_time.isoformat() if decanting.start_time else None,
+                    'end_time': decanting.end_time.isoformat() if decanting.end_time else None,
+
+                    # Helper flags for UI
+                    'has_pre_decant_data': decanting.pre_dec_pressure_bar is not None or decanting.pre_dec_reading is not None,
+                    'has_post_decant_data': decanting.post_dec_pressure_bar is not None or decanting.post_dec_reading is not None,
+                    'is_complete': decanting.confirmed_by_dbs_operator_id is not None,
+                }
+            })
+
+        except Trip.DoesNotExist:
+            return Response({'error': 'Trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=False, methods=['post'], url_path='decant/start')
     def decant_start(self, request):
         """

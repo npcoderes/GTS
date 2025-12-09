@@ -236,15 +236,15 @@ class MSConfirmArrivalView(views.APIView):  #ms confirm arrival app api
             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
-        
+
         # Verify user is from correct MS?
         # Assuming permissions handle general MS access for now.
 
         if trip.status == 'PENDING': # Or other valid statuses?
              trip.status = 'AT_MS'
-             trip.ms_return_at = timezone.now() # Are they returning? Or starting? 
-             # Initial flow: PENDING -> AT_MS. Return flow: ARRIVED_AT_MS? 
-             # If trip just started, it's PENDING or AT_MS. 
+             trip.ms_return_at = timezone.now() # Are they returning? Or starting?
+             # Initial flow: PENDING -> AT_MS. Return flow: ARRIVED_AT_MS?
+             # If trip just started, it's PENDING or AT_MS.
              # If user says "Arrival Confirm", it usually means driver arrived.
              # If status is already AT_MS, just return success.
              trip.save()
@@ -264,6 +264,100 @@ class MSConfirmArrivalView(views.APIView):  #ms confirm arrival app api
                 "truckNumber": trip.vehicle.registration_no if trip.vehicle else ""
             }
         })
+
+
+class MSFillResumeView(views.APIView):
+    """
+    Resume MS Filling - Get current filling state when operator reopens app
+
+    POST /api/ms/fill/resume
+    Payload: { "tripToken": "TOKEN123" }
+
+    Returns existing MSFilling data if operator closed app after entering pre-reading
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token_val = request.data.get('tripToken')
+        if not token_val:
+            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            trip = Trip.objects.select_related(
+                'token', 'vehicle', 'driver', 'ms', 'dbs'
+            ).prefetch_related('ms_fillings').get(token__token_no=token_val)
+
+            # Get MSFilling record if exists
+            filling = trip.ms_fillings.first()
+
+            if not filling:
+                # No filling record yet, return empty state
+                return Response({
+                    'hasFillingData': False,
+                    'tripToken': token_val,
+                    'trip': {
+                        'id': trip.id,
+                        'status': trip.status,
+                        'currentStep': trip.current_step,
+                        'vehicle': {
+                            'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                            'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                        },
+                        'driver': {
+                            'name': trip.driver.full_name if trip.driver else None,
+                        },
+                        'route': {
+                            'from': trip.ms.name if trip.ms else None,
+                            'to': trip.dbs.name if trip.dbs else None,
+                        }
+                    }
+                })
+
+            # Return existing filling data
+            return Response({
+                'hasFillingData': True,
+                'tripToken': token_val,
+                'trip': {
+                    'id': trip.id,
+                    'status': trip.status,
+                    'currentStep': trip.current_step,
+                    'stepData': trip.step_data,
+                    'vehicle': {
+                        'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                        'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                    },
+                    'driver': {
+                        'name': trip.driver.full_name if trip.driver else None,
+                    },
+                    'route': {
+                        'from': trip.ms.name if trip.ms else None,
+                        'to': trip.dbs.name if trip.dbs else None,
+                    }
+                },
+                'fillingData': {
+                    'id': filling.id,
+                    'prefill_pressure_bar': str(filling.prefill_pressure_bar) if filling.prefill_pressure_bar else None,
+                    'prefill_mfm': str(filling.prefill_mfm) if filling.prefill_mfm else None,
+                    'postfill_pressure_bar': str(filling.postfill_pressure_bar) if filling.postfill_pressure_bar else None,
+                    'postfill_mfm': str(filling.postfill_mfm) if filling.postfill_mfm else None,
+                    'filled_qty_kg': str(filling.filled_qty_kg) if filling.filled_qty_kg else None,
+                    'prefill_photo_url': filling.prefill_photo.url if filling.prefill_photo else None,
+                    'postfill_photo_url': filling.postfill_photo.url if filling.postfill_photo else None,
+                    'confirmed_by_ms_operator': filling.confirmed_by_ms_operator_id is not None,
+                    'start_time': filling.start_time.isoformat() if filling.start_time else None,
+                    'end_time': filling.end_time.isoformat() if filling.end_time else None,
+
+                    # Helper flags for UI
+                    'has_prefill_data': filling.prefill_pressure_bar is not None or filling.prefill_mfm is not None,
+                    'has_postfill_data': filling.postfill_pressure_bar is not None or filling.postfill_mfm is not None,
+                    'is_complete': filling.confirmed_by_ms_operator_id is not None,
+                }
+            })
+
+        except Trip.DoesNotExist:
+            return Response({'error': 'Trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class MSFillStartView(views.APIView):
