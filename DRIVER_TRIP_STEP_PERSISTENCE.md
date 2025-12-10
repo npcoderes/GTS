@@ -28,6 +28,7 @@ The driver trip workflow is divided into 7 distinct steps:
 
 | Step | Description | Key Actions | Data Stored |
 |------|-------------|-------------|-------------|
+:wq
 | **0** | No active trip / Initial state | - | - |
 | **1** | Trip Accepted | Driver accepts trip offer | `trip_accepted: true` |
 | **2** | Arrived at MS | Driver confirms arrival at Mother Station | `arrived_at_ms: true` |

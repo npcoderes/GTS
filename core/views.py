@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
+from django.db.models import Q
 from core.models import User, Role, UserRole, Station, Route, MSDBSMap
 from core.serializers import (
     UserSerializer, RoleSerializer, UserRoleSerializer,
@@ -201,6 +202,18 @@ class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by('-date_joined')
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        queryset = User.objects.all().order_by('-date_joined')
+        
+        # Search filter - search by email or full_name
+        search = self.request.query_params.get('search', '')
+        if search:
+            queryset = queryset.filter(
+                Q(email__icontains=search) | Q(full_name__icontains=search)
+            )
+        
+        return queryset
     
     def perform_create(self, serializer):
         user = serializer.save()

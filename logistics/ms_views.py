@@ -8,9 +8,9 @@ from core.models import Station
 from datetime import datetime, timedelta
 
 
-class MSDashboardView(views.APIView): #MS APP DASHBOARD
+class MSDashboardView(views.APIView):
     """
-    GET /api/ms/dashboard
+    API Path: GET /api/ms/dashboard/
     Returns MS dashboard data including station info, summary counts, and trips.
     """
     
@@ -113,7 +113,7 @@ class MSDashboardView(views.APIView): #MS APP DASHBOARD
                 pass 
                 
             trip_list.append({
-                "id": f"TRIP-{trip.id:03d}",
+                "id": f"{trip.id}",
                 "dbsId": trip.dbs.code if trip.dbs else "",
                 "status": status_val,
                 "quantity": quantity,
@@ -132,6 +132,10 @@ class MSDashboardView(views.APIView): #MS APP DASHBOARD
         })
 
 class MSTripScheduleView(views.APIView):
+    """
+    API Path: GET /api/ms/{ms_id}/schedule
+    Get trip schedule for specific MS.
+    """
     """
     GET /api/ms/{msId}/schedule
     Returns trip schedule for MS operator dashboard (mobile app)
@@ -162,7 +166,7 @@ class MSTripScheduleView(views.APIView):
             qty = filling.filled_qty_kg if filling and filling.filled_qty_kg else None
             
             trip_data.append({
-                'id': f'TRIP-{trip.id:03d}',
+                'id': f'{trip.id}',
                 'tripId': trip.id,
                 'dbsId': trip.dbs.code if trip.dbs else None,
                 'dbsName': trip.dbs.name if trip.dbs else None,
@@ -190,6 +194,10 @@ class MSTripScheduleView(views.APIView):
 
 
 class MSFillPrefillView(views.APIView):
+    """
+    API Path: None (Not mapped in urls.py)
+    Legacy prefill view - not currently used.
+    """
     """Get prefill data for MS filling operation"""
     permission_classes = [IsAuthenticated]
     
@@ -224,7 +232,11 @@ class MSFillPrefillView(views.APIView):
         })
 
 
-class MSConfirmArrivalView(views.APIView):  #ms confirm arrival app api
+class MSConfirmArrivalView(views.APIView):
+    """
+    API Path: POST /api/ms/arrival/confirm
+    MS operator confirms driver arrival at MS.
+    """
     """
     Step 1: MS Arrival Confirm  POST /ms/arrival/confirm
     """
@@ -259,7 +271,7 @@ class MSConfirmArrivalView(views.APIView):  #ms confirm arrival app api
         return Response({
             "success": True,
             "trip": {
-                "id": f"TRIP-{trip.id:03d}",
+                "id": f"{trip.id}",
                 "status": "AT_MS",
                 "truckNumber": trip.vehicle.registration_no if trip.vehicle else ""
             }
@@ -267,6 +279,10 @@ class MSConfirmArrivalView(views.APIView):  #ms confirm arrival app api
 
 
 class MSFillResumeView(views.APIView):
+    """
+    API Path: POST /api/ms/fill/resume
+    Resume filling process and get current state.
+    """
     """
     Resume MS Filling - Get current filling state when operator reopens app
 
@@ -362,6 +378,10 @@ class MSFillResumeView(views.APIView):
 
 class MSFillStartView(views.APIView):
     """
+    API Path: POST /api/ms/fill/start
+    Start filling process with pre-fill readings.
+    """
+    """
     Step 2: Start Filling (Pre-Readings) POST /ms/fill/start  app
     """
     permission_classes = [IsAuthenticated]
@@ -425,6 +445,10 @@ class MSFillStartView(views.APIView):
 
 
 class MSFillEndView(views.APIView):
+    """
+    API Path: POST /api/ms/fill/end
+    End filling process with post-fill readings.
+    """
     """
     Step 3: End Filling (Post-Readings) POST /ms/fill/end app
     """
@@ -498,6 +522,10 @@ class MSFillEndView(views.APIView):
 
 class MSConfirmFillingView(views.APIView):
     """
+    API Path: POST /api/ms/fill/confirm
+    Confirm filling completion.
+    """
+    """
     Step 4: Final Confirmation     POST /ms/fill/confirm:  app
     """
     permission_classes = [IsAuthenticated]
@@ -542,6 +570,10 @@ class MSConfirmFillingView(views.APIView):
 
 
 class MSStockTransferListView(views.APIView):
+    """
+    API Path: GET /api/ms/{ms_id}/transfers
+    List stock transfers for specific MS.
+    """
     """Get completed stock transfers for MS"""
     permission_classes = [IsAuthenticated]
     
@@ -565,7 +597,7 @@ class MSStockTransferListView(views.APIView):
             transfer_time = trip.ms_departure_at or trip.started_at
             
             data.append({
-                "id": f"TRIP-{trip.id:03d}",
+                "id": f"{trip.id}",
                 "route": f"{trip.ms.name} → {trip.dbs.name}",
                 "product": "CNG",
                 "quantity": qty,
@@ -579,6 +611,10 @@ class MSStockTransferListView(views.APIView):
 
 
 class MSClusterView(views.APIView):
+    """
+    API Path: GET /api/ms/cluster
+    Get MS cluster data (parent MS and child DBSs).
+    """
     """
     GET /api/ms/cluster
     Fetches the list of DBS stations linked to the logged-in MS. app
@@ -629,6 +665,10 @@ class MSClusterView(views.APIView):
 
 
 class MSStockTransferHistoryByDBSView(views.APIView):
+    """
+    API Path: GET /api/ms/stock-transfers/by-dbs
+    Get stock transfer history grouped by DBS.
+    """
     """
     GET /api/ms/stock-transfers/by-dbs
     Fetches history of stock transfers for a specific DBS.
@@ -717,7 +757,7 @@ class MSStockTransferHistoryByDBSView(views.APIView):
             qty = float(filling.filled_qty_kg) if filling and filling.filled_qty_kg else 0
             
             transfer_list.append({
-                "id": f"TRIP-{trip.id:03d}", # User requested TRF-1001 like ID, using TRIP check
+                "id": f"{trip.id}", # User requested TRF-1001 like ID, using TRIP check
                 "type": "OUTGOING", # From MS perspective
                 "status": trip_status_mapped,
                 "productName": "CNG",
@@ -744,6 +784,10 @@ class MSStockTransferHistoryByDBSView(views.APIView):
 
 
 class MSPendingArrivalsView(views.APIView):
+    """
+    API Path: GET /api/ms/pending-arrivals
+    Get pending vehicle arrivals at MS.
+    """
     """
     GET /api/ms/pending-arrivals
     Returns list of trucks that have arrived at MS (status=AT_MS) 

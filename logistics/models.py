@@ -111,7 +111,7 @@ class StockRequest(models.Model):
     dbs = models.ForeignKey(Station, on_delete=models.CASCADE, related_name='stock_requests')
     source_vendor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='stock_requests_as_vendor')
     requested_by_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='stock_requests_requested')
-    requested_qty_kg = models.DecimalField(max_digits=10, decimal_places=2)
+    requested_qty_kg = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     current_stock_kg = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     rate_of_sale_kg_per_min = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     dot_minutes = models.IntegerField(null=True, blank=True)

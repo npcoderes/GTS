@@ -30,8 +30,15 @@ def check_eic_permission(user):
 
 class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    EIC-specific Stock Request management
-    Provides list, detail, approve, and reject actions
+    API Path: /api/eic/stock-requests/
+    EIC-specific Stock Request management.
+    
+    Actions:
+      - GET /api/eic/stock-requests/ - List stock requests for EIC
+      - GET /api/eic/stock-requests/{id}/ - Get stock request detail
+      - POST /api/eic/stock-requests/{id}/approve/ - Approve/reject stock request
+      - POST /api/eic/stock-requests/{id}/assign/ - Assign driver to request
+      - GET /api/eic/stock-requests/{id}/available-drivers/ - Get available drivers
     """
     queryset = StockRequest.objects.all()
     serializer_class = StockRequestSerializer
@@ -197,7 +204,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                                         'stock_request_id': str(stock_request.id),
                                         'from_ms': ms_name,
                                         'to_dbs': dbs_name,
-                                        'quantity': str(stock_request.requested_qty_kg)
+                                        'quantity': str(stock_request.requested_qty_kg) if stock_request.requested_qty_kg else 'Not Available'
                                     }
                                 )
                                 driver_notified = True
@@ -445,7 +452,8 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
 class EICDashboardView(views.APIView):
     """
-    EIC dashboard statistics and overview
+    API Path: GET /api/eic/dashboard
+    EIC dashboard statistics and overview.
     """
     def get(self, request):
         if not check_eic_permission(request.user):
@@ -530,6 +538,11 @@ class EICDashboardView(views.APIView):
         })
 
 class EICDriverApprovalView(views.APIView):
+    """
+    API Path: GET /api/eic/driver-approvals/pending
+              POST /api/eic/driver-approvals/pending
+    List and manage pending driver approvals.
+    """
     """
     EIC Driver Approval - List pending driver shifts
     
@@ -629,6 +642,10 @@ class EICDriverApprovalView(views.APIView):
 
 class EICPermissionsView(views.APIView):
     """
+    API Path: GET /api/eic/permissions
+    Returns EIC user's permissions.
+    """
+    """
     Get current EIC user's permissions
     """
     def get(self, request):
@@ -669,6 +686,10 @@ class EICPermissionsView(views.APIView):
 # =============================================================================
 
 class EICNetworkOverviewView(views.APIView):
+    """
+    API Path: GET /api/eic/network-overview
+    Network overview showing stations, active trips, and driver status.
+    """
     """
     GET /api/eic/network-overview
     Returns MS stations, DBS stations, and their trip schedules for the dashboard.
@@ -756,7 +777,7 @@ class EICNetworkOverviewView(views.APIView):
                 status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'COMPLETED', 'CANCELLED']
             ).order_by('-started_at'):
                 trips.append({
-                    'id': f'TRIP-{trip.id}',
+                    'id': f'{trip.id}',
                     'msId': ms.code,
                     'msName': ms.name,
                     'dbsId': trip.dbs.code if trip.dbs else None,
@@ -782,7 +803,7 @@ class EICNetworkOverviewView(views.APIView):
                 status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'COMPLETED', 'CANCELLED']
             ).order_by('-started_at'):
                 trips.append({
-                    'id': f'TRIP-{trip.id}',
+                    'id': f'{trip.id}',
                     'msId': trip.ms.code if trip.ms else None,
                     'msName': trip.ms.name if trip.ms else None,
                     'dbsId': dbs.code,
@@ -809,6 +830,10 @@ class EICNetworkOverviewView(views.APIView):
 
 
 class EICReconciliationReportView(views.APIView):
+    """
+    API Path: GET /api/eic/reconciliation-reports
+    List reconciliation reports for review.
+    """
     """
     GET /api/eic/reconciliation-reports/
     Returns reconciliation reports with variance analysis.
@@ -895,6 +920,10 @@ class EICReconciliationReportView(views.APIView):
 
 class EICReconciliationActionView(views.APIView):
     """
+    API Path: POST /api/eic/reconciliation-reports/{report_id}/action
+    Take action on a reconciliation report.
+    """
+    """
     POST /api/eic/reconciliation-reports/{reportId}/action/
     Trigger corrective action on a reconciliation report
     """
@@ -935,6 +964,10 @@ class EICReconciliationActionView(views.APIView):
 
 
 class EICVehicleTrackingView(views.APIView):
+    """
+    API Path: GET /api/eic/vehicles/active
+    Get active vehicle locations and status.
+    """
     """
     GET /api/eic/vehicles/active
     Returns active vehicles with location derived from trip status.
@@ -1024,6 +1057,10 @@ class EICVehicleTrackingView(views.APIView):
 
 class EICVehicleQueueView(views.APIView):
     """
+    API Path: GET /api/eic/vehicle-queue
+    Get vehicle queue status.
+    """
+    """
     GET /api/eic/vehicle-queue
     Returns vehicle queue for MS bays (filling) or DBS bays (decanting).
     """
@@ -1082,6 +1119,10 @@ class EICVehicleQueueView(views.APIView):
 
 class EICIncomingStockRequestsView(views.APIView):
     """
+    API Path: GET /api/eic/incoming-stock-requests
+    Get incoming stock requests for EIC's MS.
+    """
+    """
     GET /api/eic/incoming-stock-requests
     Returns incoming stock requests from FDODO, DBS operators, and AI predictions.
     """
@@ -1121,3 +1162,101 @@ class EICIncomingStockRequestsView(views.APIView):
         
         return Response({'requests': results})
 
+
+class EICAlertListView(views.APIView):
+    """
+    API Path: GET /api/eic/alerts
+    
+    Get all recent alerts for EIC. Returns alerts for MS stations assigned to the EIC.
+    
+    Query Parameters:
+        - type: Filter by alert type (optional)
+        - severity: Filter by severity - LOW, MEDIUM, HIGH, CRITICAL (optional)
+        - limit: Number of alerts to return (default: 50)
+    
+    Response:
+    {
+        "alerts": [
+            {
+                "id": 123,
+                "type": "ACCIDENT",
+                "severity": "CRITICAL",
+                "message": "Vehicle collision on highway",
+                "trip_id": 456,
+                "trip_token": "TOKEN123",
+                "station_id": 1,
+                "station_name": "MS Alpha",
+                "driver_name": "John Driver",
+                "vehicle_no": "GJ-01-AB-1234",
+                "created_at": "2025-12-10T10:30:00Z"
+            }
+        ],
+        "total": 10
+    }
+    """
+    def get(self, request):
+        from core.models import UserRole
+        
+        # Get EIC's assigned MS stations
+        eic_station_ids = UserRole.objects.filter(
+            user=request.user,
+            role__code='EIC',
+            active=True,
+            station__type='MS'
+        ).values_list('station_id', flat=True)
+        
+        # Check if super admin (can see all alerts)
+        is_super_admin = request.user.user_roles.filter(
+            role__code='SUPER_ADMIN',
+            active=True
+        ).exists()
+        
+        # Build query
+        alerts_query = Alert.objects.select_related('trip', 'station', 'trip__driver', 'trip__vehicle', 'trip__token')
+        
+        if not is_super_admin:
+            # Filter alerts by EIC's assigned MS stations
+            alerts_query = alerts_query.filter(
+                Q(station_id__in=eic_station_ids) | 
+                Q(trip__ms_id__in=eic_station_ids)
+            )
+        
+        # Apply filters from query params
+        alert_type = request.query_params.get('type')
+        severity = request.query_params.get('severity')
+        limit = int(request.query_params.get('limit', 50))
+        
+        if alert_type:
+            alerts_query = alerts_query.filter(type__iexact=alert_type)
+        if severity:
+            alerts_query = alerts_query.filter(severity__iexact=severity)
+        
+        # Order by most recent and limit
+        alerts = alerts_query.order_by('-created_at')[:limit]
+        
+        # Build response
+        results = []
+        for alert in alerts:
+            trip = alert.trip
+            results.append({
+                'id': alert.id,
+                'type': alert.type,
+                'severity': alert.severity,
+                'message': alert.message,
+                'trip_id': trip.id if trip else None,
+                'trip_token': trip.token.token_no if trip and trip.token else None,
+                'trip_status': trip.status if trip else None,
+                'station_id': alert.station_id,
+                'station_name': alert.station.name if alert.station else None,
+                'driver_name': trip.driver.full_name if trip and trip.driver else None,
+                'driver_phone': trip.driver.phone if trip and trip.driver else None,
+                'vehicle_no': trip.vehicle.registration_no if trip and trip.vehicle else None,
+                'ms_name': trip.ms.name if trip and trip.ms else None,
+                'dbs_name': trip.dbs.name if trip and trip.dbs else None,
+                'created_at': timezone.localtime(alert.created_at).isoformat()
+            })
+        
+        return Response({
+            'alerts': results,
+            'total': len(results)
+        })

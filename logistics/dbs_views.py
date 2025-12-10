@@ -10,6 +10,10 @@ from core.models import Station
 from rest_framework.decorators import action
 
 class DBSDashboardView(views.APIView):
+    """
+    API Path: GET /api/dbs/dashboard/
+    DBS dashboard with station info, summary counts, and pending arrivals.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -72,7 +76,7 @@ class DBSDashboardView(views.APIView):
 
             # Format Trip Data
             trip_data = {
-                "id": f"TRIP-{trip.id:03d}", # Format ID
+                "id": f"{trip.id}", # Format ID
                 "status": trip.status,
                 "route": f"{trip.ms.name} → {trip.dbs.name}",
                 "msName": trip.ms.name,
@@ -96,6 +100,17 @@ class DBSDashboardView(views.APIView):
         return Response(response_data)
 
 class DBSStockRequestViewSet(viewsets.ViewSet):
+    """
+    API Path: /api/dbs/stock-requests/
+    DBS Stock Request management ViewSet.
+    
+    Actions:
+      - GET /api/dbs/stock-requests - List stock requests for DBS
+      - POST /api/dbs/stock-requests/arrival/confirm - Confirm truck arrival
+      - POST /api/dbs/stock-requests/decant/start - Start decanting with pre-readings
+      - POST /api/dbs/stock-requests/decant/end - End decanting with post-readings
+      - POST /api/dbs/stock-requests/decant/confirm - Confirm decanting completion
+    """
     permission_classes = [IsAuthenticated]
 
     @action(detail=False, methods=['post'], url_path='arrival/confirm')
@@ -129,7 +144,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         return Response({
             "success": True,
             "trip": {
-                "id": f"TRIP-{trip.id}",
+                "id": f"{trip.id}",
                 "status": "ARRIVED"
             }
         })
@@ -448,6 +463,10 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         return Response(data)
 
 class DBSStockTransferListView(views.APIView):
+    """
+    API Path: GET /api/dbs/transfers
+    List stock transfers for DBS.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -557,6 +576,10 @@ class DBSStockTransferListView(views.APIView):
 
 
 class DBSPendingArrivalsView(views.APIView):
+    """
+    API Path: GET /api/dbs/pending-arrivals
+    Get pending vehicle arrivals at DBS.
+    """
     """
     GET /api/dbs/pending-arrivals
     Returns list of trucks that have arrived at DBS (status=AT_DBS) 

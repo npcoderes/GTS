@@ -48,6 +48,7 @@ def _get_user_dbs_station(request):
 
 
 class CustomerDashboardView(views.APIView):
+    """API Path: /api/customer/dashboard"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -84,6 +85,7 @@ class CustomerDashboardView(views.APIView):
 
 
 class CustomerStocksView(views.APIView):
+    """API Path: /api/customer/stocks"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -141,6 +143,7 @@ class CustomerStocksView(views.APIView):
 
 
 class CustomerTransportView(views.APIView):
+    """API Path: /api/customer/transport"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -172,7 +175,11 @@ class CustomerTransportView(views.APIView):
 
 
 class CustomerTransfersView(views.APIView):  
-    """Returns stock request transfers for the authenticated customer's DBS."""
+    """
+    API Path: /api/customer/transfers
+    
+    Returns stock request transfers for the authenticated customer's DBS.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -237,6 +244,7 @@ class CustomerTransfersView(views.APIView):
 
 
 class CustomerPendingTripsView(views.APIView):
+    """API Path: /api/customer/pending-trips"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -268,6 +276,7 @@ class CustomerPendingTripsView(views.APIView):
 
 
 class CustomerTripAcceptView(views.APIView):
+    """API Path: /api/customer/trips/<int:trip_id>/accept"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, trip_id):
@@ -289,6 +298,7 @@ class CustomerTripAcceptView(views.APIView):
 
 
 class CustomerPermissionsView(views.APIView):
+    """API Path: /api/customer/permissions"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, user_id=None):

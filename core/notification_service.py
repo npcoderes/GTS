@@ -264,13 +264,14 @@ class NotificationService:
     
     def notify_stock_approved(self, dbs_operator, stock_request):
         """Notify DBS operator that their stock request was approved."""
+        qty_text = f"{stock_request.requested_qty_kg}kg" if stock_request.requested_qty_kg else "stock"
         return self.send_to_user(
             user=dbs_operator,
             title="Stock Request Approved",
-            body=f"Your request for {stock_request.requested_qty_kg}kg has been approved.",
+            body=f"Your request for {qty_text} has been approved.",
             data={
                 'stockRequestId': str(stock_request.id),
-                'approvedQty': str(stock_request.requested_qty_kg),
+                'approvedQty': str(stock_request.requested_qty_kg) if stock_request.requested_qty_kg else 'Not Available',
             },
             notification_type='stock_approved'
         )

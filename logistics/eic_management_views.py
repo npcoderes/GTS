@@ -11,7 +11,11 @@ from .serializers import TripSerializer
 
 
 class EICVehicleQueueView(views.APIView):
-    """Get vehicle queue at MS stations"""
+    """
+    API Path: /api/eic/vehicle-queue
+    
+    Get vehicle queue at MS stations
+    """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
@@ -59,7 +63,11 @@ class EICVehicleQueueView(views.APIView):
 
 
 class EICClusterViewSet(viewsets.ModelViewSet):
-    """Cluster management for EIC"""
+    """
+    API Path: /api/eic/clusters/
+    
+    Cluster management for EIC
+    """
     permission_classes = [IsAuthenticated]
     serializer_class = TripSerializer  # Placeholder, will need ClusterSerializer
     
@@ -286,7 +294,8 @@ class EICClusterViewSet(viewsets.ModelViewSet):
 
 class EICStockTransferMSDBSView(views.APIView):
     """
-    GET /api/eic/stock-transfers/ms-dbs
+    API Path: /api/eic/stock-transfers/ms-dbs
+    
     Returns MS station with its linked DBS stations.
     
     Response:
@@ -377,7 +386,10 @@ class EICStockTransferMSDBSView(views.APIView):
 
 class EICStockTransfersByDBSView(views.APIView):
     """
-    GET /api/eic/stock-transfers/by-dbs?dbs_id={dbsId}
+    API Path: /api/eic/stock-transfers/by-dbs
+    
+    Also available at: /api/eic/stock-transfers
+    
     Returns stock transfers for a specific DBS.
     
     Response:

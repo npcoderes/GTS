@@ -86,7 +86,7 @@ class EICStockRequestListSerializer(serializers.ModelSerializer):
     type = serializers.CharField(source='source')
     customer = serializers.SerializerMethodField()
     dbsId = serializers.SerializerMethodField()
-    quantity = serializers.DecimalField(source='requested_qty_kg', max_digits=10, decimal_places=2)
+    quantity = serializers.DecimalField(source='requested_qty_kg', max_digits=10, decimal_places=2, allow_null=True, required=False)
     requestedAt = serializers.DateTimeField(source='created_at')
     availableDrivers = serializers.SerializerMethodField()
     

@@ -9,7 +9,7 @@ from .eic_views import (
     EICStockRequestViewSet, EICDashboardView, 
     EICDriverApprovalView, EICPermissionsView,
     EICNetworkOverviewView, EICReconciliationReportView, EICReconciliationActionView,
-    EICVehicleTrackingView, EICIncomingStockRequestsView
+    EICVehicleTrackingView, EICIncomingStockRequestsView, EICAlertListView
 )
 from .customer_views import (
     CustomerDashboardView,
@@ -65,6 +65,7 @@ urlpatterns = [
     path('eic/reconciliation-reports/<int:report_id>/action', EICReconciliationActionView.as_view(), name='eic-reconciliation-action'),
     path('eic/vehicles/active', EICVehicleTrackingView.as_view(), name='eic-vehicle-tracking'),
     path('eic/incoming-stock-requests', EICIncomingStockRequestsView.as_view(), name='eic-incoming-stock-requests'),
+    path('eic/alerts', EICAlertListView.as_view(), name='eic-alerts'),
     path('eic/stock-transfers', EICStockTransfersByDBSView.as_view(), name='eic-stock-transfers'),
     path('eic/stock-transfers/ms-dbs', EICStockTransferMSDBSView.as_view(), name='eic-stock-transfers-ms-dbs'),
     path('eic/stock-transfers/by-dbs', EICStockTransfersByDBSView.as_view(), name='eic-stock-transfers-by-dbs'),

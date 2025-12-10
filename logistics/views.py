@@ -27,6 +27,16 @@ def get_trip_by_token(token_id):
 # --- ViewSets ---
 
 class StockRequestViewSet(viewsets.ModelViewSet):
+    """
+    API Path: /api/stock-requests/
+    Methods: GET (list), POST (create), GET (retrieve), PUT (update), DELETE (delete)
+    Actions:
+      - GET /api/stock-requests/ - List all stock requests
+      - POST /api/stock-requests/ - Create new stock request
+      - GET /api/stock-requests/{id}/ - Get stock request detail
+      - PUT /api/stock-requests/{id}/ - Update stock request
+      - DELETE /api/stock-requests/{id}/ - Delete stock request
+    """
     queryset = StockRequest.objects.all()
     serializer_class = StockRequestSerializer
 
@@ -111,6 +121,17 @@ class StockRequestViewSet(viewsets.ModelViewSet):
             pass
 
 class TripViewSet(viewsets.ModelViewSet):
+    """
+    API Path: /api/trips/
+    Methods: GET (list), POST (create), GET (retrieve), PUT (update), DELETE (delete)
+    Actions:
+      - GET /api/trips/ - List all trips
+      - POST /api/trips/ - Create new trip
+      - GET /api/trips/{id}/ - Get trip detail
+      - PUT /api/trips/{id}/ - Update trip
+      - DELETE /api/trips/{id}/ - Delete trip
+      - GET /api/driver/trip/status?token={token} - Get trip status by token
+    """
     queryset = Trip.objects.all()
     serializer_class = TripSerializer
 
@@ -141,6 +162,19 @@ class TripViewSet(viewsets.ModelViewSet):
         return Response(TripSerializer(trip).data)
 
 class DriverViewSet(viewsets.ModelViewSet):
+    """
+    API Path: /api/drivers/
+    Methods: GET (list), POST (create), GET (retrieve), PUT (update), DELETE (delete)
+    Actions:
+      - GET /api/drivers/ - List all drivers
+      - POST /api/drivers/ - Create new driver
+      - GET /api/drivers/{id}/ - Get driver detail
+      - PUT /api/drivers/{id}/ - Update driver
+      - DELETE /api/drivers/{id}/ - Delete driver
+      - GET /api/driver/{id}/token - Get active token for driver
+      - GET /api/driver/trips - Get trips for authenticated driver
+      - GET /api/driver/{id}/trips - Get trips for specific driver
+    """
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
 
@@ -176,15 +210,31 @@ class DriverViewSet(viewsets.ModelViewSet):
         except (AttributeError, Driver.DoesNotExist):
             return Response({'error': 'User is not a driver'}, status=403)
         
-        trips = Trip.objects.filter(driver=driver)\
-            .select_related('ms', 'dbs', 'stock_request')\
-            .prefetch_related('dbs_decantings', 'ms_fillings')\
-            .order_by('-id')
+        trips = (
+        Trip.objects
+        .filter(driver=driver)
+        .exclude(status='COMPLETED')   # <-- IMPORTANT: filter only non-completed trips
+        .select_related('ms', 'dbs', 'stock_request')
+        .prefetch_related('dbs_decantings', 'ms_fillings')
+        .order_by('-id')
+        )
         
         serializer = TripHistorySerializer(trips, many=True)
         return Response({'trips': serializer.data})
 
 class ShiftViewSet(viewsets.ModelViewSet):
+    """
+    API Path: /api/shifts/
+    Methods: GET (list), POST (create), GET (retrieve), PUT (update), DELETE (delete)
+    Actions:
+      - GET /api/shifts/ - List all shifts
+      - POST /api/shifts/ - Create new shift
+      - GET /api/shifts/{id}/ - Get shift detail
+      - PUT /api/shifts/{id}/ - Update shift
+      - DELETE /api/shifts/{id}/ - Delete shift
+      - POST /api/shifts/{id}/approve/ - Approve shift (EIC only)
+      - POST /api/shifts/{id}/reject/ - Reject shift (EIC only)
+    """
     queryset = Shift.objects.all()
     serializer_class = ShiftSerializer
 
@@ -324,16 +374,34 @@ class ShiftViewSet(viewsets.ModelViewSet):
         })
 
 class VehicleViewSet(viewsets.ModelViewSet):
+    """
+    API Path: /api/vehicles/
+    Methods: GET (list), POST (create), GET (retrieve), PUT (update), DELETE (delete)
+    Actions:
+      - GET /api/vehicles/ - List all vehicles
+      - POST /api/vehicles/ - Create new vehicle
+      - GET /api/vehicles/{id}/ - Get vehicle detail
+      - PUT /api/vehicles/{id}/ - Update vehicle
+      - DELETE /api/vehicles/{id}/ - Delete vehicle
+    """
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
 
 # --- Driver Operations ---
 
 class DriverLocationView(views.APIView):
+    """
+    API Path: POST /api/driver/location
+    Updates driver's current location.
+    """
     def post(self, request):
         return Response({'status': 'updated'})
 
 class DriverArrivalMSView(views.APIView):
+    """
+    API Path: None (Not mapped in urls.py - use /api/driver/arrival/ms via DriverTripViewSet instead)
+    Legacy view for driver arrival at MS.
+    """
     def post(self, request):
         token_id = request.data.get('token')
         trip = get_trip_by_token(token_id)
@@ -343,6 +411,10 @@ class DriverArrivalMSView(views.APIView):
         return Response({'status': 'confirmed', 'trip_id': trip.id})
 
 class DriverArrivalDBSView(views.APIView):
+    """
+    API Path: None (Not mapped in urls.py - use /api/driver/arrival/dbs via DriverTripViewSet instead)
+    Legacy view for driver arrival at DBS.
+    """
     def post(self, request):
         token_id = request.data.get('token')
         trip = get_trip_by_token(token_id)
@@ -352,6 +424,10 @@ class DriverArrivalDBSView(views.APIView):
         return Response({'status': 'confirmed', 'trip_id': trip.id})
 
 class MeterReadingConfirmationView(views.APIView):
+    """
+    API Path: None (Not mapped in urls.py - use /api/driver/meter-reading/confirm via DriverTripViewSet instead)
+    Legacy view for meter reading confirmation.
+    """
     def post(self, request):
         token_id = request.data.get('token')
         reading_value = request.data.get('reading')
@@ -389,37 +465,134 @@ class MeterReadingConfirmationView(views.APIView):
         return Response({'status': 'confirmed', 'updated': reading_type})
 
 class TripCompleteView(views.APIView):
+    """
+    API Path: POST /api/driver/trip/complete
+    Marks trip as completed when driver returns to MS.
+    """
     def post(self, request):
         token_id = request.data.get('token')
         trip = get_trip_by_token(token_id)
         trip.status = 'COMPLETED'
+        trip.current_step = '7'
         trip.ms_return_at = timezone.now()
         trip.completed_at = timezone.now()
         trip.save()
         return Response({'status': 'completed'})
 
 class EmergencyReportView(views.APIView):
+    """
+    API Path: POST /api/driver/emergency
+    
+    Register an emergency alert. Gets trip from token, stores MS station ID.
+    Notifies all EICs assigned to the MS station.
+    
+    Request Payload:
+    {
+        "token": "TRIP_TOKEN_123",    # Required - trip token to identify the trip
+        "type": "ACCIDENT",           # Required - any emergency type from frontend
+        "message": "Vehicle collision",# Required - description of the emergency
+        "severity": "CRITICAL"        # Required - LOW, MEDIUM, HIGH, CRITICAL
+    }
+    
+    Response:
+    {
+        "success": true,
+        "alert_id": 123,
+        "message": "Emergency reported. EICs have been notified.",
+        "notifications_sent": 2
+    }
+    """
     def post(self, request):
-        token_id = request.data.get('token')
-        desc = request.data.get('description')
-        trip = None
-        if token_id:
-            try:
-                trip = get_trip_by_token(token_id)
-            except:
-                pass
+        from core.notification_service import notification_service
+        from core.models import UserRole
         
-        Alert.objects.create(
-            type='EMERGENCY',
-            severity='CRITICAL',
-            message=desc or 'Emergency reported by driver',
-            trip=trip
+        # Parse request data from frontend
+        token_id = request.data.get('token')
+        emergency_type = request.data.get('type', 'OTHER')
+        message = request.data.get('message', '')
+        severity = request.data.get('severity', 'CRITICAL')
+        
+        # Validate required fields
+        if not token_id:
+            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not message:
+            message = 'No additional details provided.'
+        # Get trip from token
+        try:
+            trip = get_trip_by_token(token_id)
+        except:
+            return Response({'error': 'Invalid token or trip not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get MS station from trip
+        ms = trip.ms
+        if not ms and trip.dbs:
+            ms = trip.dbs.parent_station
+        
+        # Create the alert with trip_id and station_id (MS)
+        alert = Alert.objects.create(
+            type=emergency_type,  # Store the actual emergency type from frontend
+            severity=severity,
+            message=message,
+            trip=trip,
+            station=ms  # Store MS station ID
         )
-        return Response({'status': 'reported'})
+        
+        # Update trip status to EMERGENCY
+        # if trip.status not in ['COMPLETED', 'CANCELLED', 'EMERGENCY']:
+        #     trip.status = 'EMERGENCY'
+        #     trip.step_data = {
+        #         **trip.step_data, 
+        #         'emergency_reported': True,
+        #         'emergency_type': emergency_type,
+        #         'emergency_at': timezone.now().isoformat(),
+        #         'alert_id': alert.id
+        #     }
+        #     trip.save(update_fields=['status', 'step_data'])
+        
+        # Send notifications to all EICs for this MS
+        notifications_sent = 0
+        driver = trip.driver
+        if ms:
+            try:
+                eic_roles = UserRole.objects.filter(
+                    station=ms,
+                    role__code='EIC',
+                    active=True
+                )
+                
+                for eic_role in eic_roles:
+                    if eic_role.user:
+                        notification_service.send_to_user(
+                            user=eic_role.user,
+                            title=f"🚨 EMERGENCY: {emergency_type}",
+                            body=f"Driver: {driver.full_name if driver else 'Unknown'}\n{message[:100]}",
+                            data={
+                                'type': 'EMERGENCY',
+                                'emergency_type': emergency_type,
+                                'alert_id': str(alert.id),
+                                'trip_id': str(trip.id),
+                                'token': token_id,
+                                'driver_name': driver.full_name if driver else None,
+                                'vehicle_no': trip.vehicle.registration_no if trip.vehicle else None,
+                                'severity': severity
+                            }
+                        )
+                        notifications_sent += 1
+            except Exception as e:
+                logger.error(f"Error sending emergency notifications: {e}")
+        
+        return Response({
+            'success': True,
+            'message': f'Emergency reported. {notifications_sent} EIC(s) have been notified.',
+        })
 
 # --- MS Operations ---
 
 class MSConfirmArrivalView(views.APIView):
+    """
+    API Path: None (Not mapped - use /api/ms/arrival/confirm in ms_views.py instead)
+    Legacy view for MS arrival confirmation.
+    """
     def post(self, request):
         token_id = request.data.get('token')
         trip = get_trip_by_token(token_id)

@@ -17,6 +17,23 @@ DRIVER_ASSIGNMENT_TIMEOUT = getattr(settings, 'DRIVER_ASSIGNMENT_TIMEOUT_SECONDS
 
 
 class DriverTripViewSet(viewsets.ViewSet):
+    """
+    API Path: /api/driver-trips/
+    Driver trip management ViewSet.
+    
+    Actions:
+      - GET /api/driver-trips/pending-offers/ - Get pending trip offers
+      - GET /api/driver/pending-offers - Get pending trip offers (alias)
+      - POST /api/driver-trips/accept/ - Accept a trip offer
+      - POST /api/driver-trips/reject/ - Reject a trip offer
+      - POST /api/driver-trips/arrival-at-ms/ - Confirm arrival at MS
+      - POST /api/driver/arrival/ms - Confirm arrival at MS (alias)
+      - POST /api/driver-trips/arrival-at-dbs/ - Confirm arrival at DBS
+      - POST /api/driver/arrival/dbs - Confirm arrival at DBS (alias)
+      - POST /api/driver-trips/meter-reading/confirm/ - Confirm meter reading
+      - POST /api/driver/meter-reading/confirm - Confirm meter reading (alias)
+      - GET /api/driver-trips/resume/ - Resume trip and get current state
+    """
     permission_classes = [IsAuthenticated]
 
     @action(detail=False, methods=['get'], url_path='pending-offers')
@@ -83,7 +100,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         
         return Response({
             'pending_offers': offers,
-            'count': len(offers),
+            # 'count': len(offers),
             'timeout_seconds': DRIVER_ASSIGNMENT_TIMEOUT
         })
 
@@ -487,38 +504,77 @@ class DriverTripViewSet(viewsets.ViewSet):
         except Trip.DoesNotExist:
              return Response({'error': 'Active trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
 
-    @action(detail=False, methods=['get'], url_path='resume')
+    @action(detail=False, methods=['get', 'post'], url_path='resume')
     def resume_trip(self, request):
         """
         Resume trip - Get current trip state for driver when app reopens.
 
         GET /api/driver-trips/resume/
+        POST /api/driver-trips/resume/
+        
+        Optional Payload (POST):
+        {
+            "token": "TRIP_TOKEN_XYZ"  # Optional - if provided, returns that specific trip
+        }
 
         Returns current trip progress including:
         - Current step (0-7)
         - Partial progress data
         - MS Filling details if in step 3
         - DBS Decanting details if in step 5
+        
+        If token is provided: Returns trip matching that token (must belong to driver)
+        If token is NOT provided: Returns any active trip for the driver
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
             return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
 
-        # Find active trip for this driver
-        active_trip = Trip.objects.filter(
-            driver=driver,
-            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']
-        ).select_related(
-            'token', 'vehicle', 'ms', 'dbs', 'stock_request'
-        ).prefetch_related(
-            'ms_fillings', 'dbs_decantings'
-        ).first()
+        # Check if token is provided (from POST body or query params)
+        token_val = None
+        if request.method == 'POST':
+            token_val = request.data.get('token')
+        else:
+            token_val = request.query_params.get('token')
 
-        if not active_trip:
-            return Response({
-                'hasActiveTrip': False,
-                'message': 'No active trip found'
-            })
+        # If token is provided, find trip by token
+        if token_val:
+            try:
+                active_trip = Trip.objects.filter(
+                    driver=driver,
+                    token__token_no=token_val
+                ).select_related(
+                    'token', 'vehicle', 'ms', 'dbs', 'stock_request'
+                ).prefetch_related(
+                    'ms_fillings', 'dbs_decantings'
+                ).first()
+                
+                if not active_trip:
+                    return Response({
+                        'hasActiveTrip': False,
+                        'message': 'No trip found for this token'
+                    }, status=status.HTTP_404_NOT_FOUND)
+                    
+            except Exception as e:
+                return Response({
+                    'error': f'Error finding trip: {str(e)}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # No token provided - find any active trip for this driver (original behavior)
+            active_trip = Trip.objects.filter(
+                driver=driver,
+                status__in=['PENDING', 'AT_MS', 'FILLING', 'FILLED', 'IN_TRANSIT', 'DISPATCHED', 'AT_DBS', 'DECANTING_CONFIRMED']
+            ).select_related(
+                'token', 'vehicle', 'ms', 'dbs', 'stock_request'
+            ).prefetch_related(
+                'ms_fillings', 'dbs_decantings'
+            ).first()
+
+            if not active_trip:
+                return Response({
+                    'hasActiveTrip': False,
+                    'message': 'No active trip found'
+                })
 
         # Calculate current step and get detailed information
         step_details = active_trip.get_step_details()
@@ -618,6 +674,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     if photo_file:
                         filling.prefill_photo = photo_file
                     # Update step tracking
+                    trip.status = 'FILLING'  # Set status to FILLING when pre-reading is done
                     trip.current_step = 3  # Step 3: MS Filling in progress
                     trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
                     trip.save()
@@ -636,6 +693,9 @@ class DriverTripViewSet(viewsets.ViewSet):
                         trip.ms_departure_at = timezone.now()
                         trip.current_step = 4  # Step 4: Heading to DBS
                         trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+                    else:
+                        # Post-reading done but not confirmed yet
+                        trip.status = 'FILLED'
                     trip.save()
                 filling.save()
                 
@@ -677,3 +737,119 @@ class DriverTripViewSet(viewsets.ViewSet):
              return Response({'error': 'Trip not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
              return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='emergency')
+    def report_emergency(self, request):
+        """
+        API Path: POST /api/driver-trips/emergency/
+        
+        Report an emergency during a trip. Uses token to identify the trip.
+        Stores trip_id and station_id (MS) in Alert table. Notifies all EICs.
+        
+        Request Payload:
+        {
+            "token": "TRIP_TOKEN_123",    # Required - trip token
+            "type": "ACCIDENT",           # Required - any emergency type from frontend
+            "message": "Vehicle collision",# Required - description of the emergency
+            "severity": "CRITICAL"        # Required - LOW, MEDIUM, HIGH, CRITICAL
+        }
+        
+        Response:
+        {
+            "success": true,
+            "alert_id": 123,
+            "trip_id": 456,
+            "message": "Emergency reported. 2 EIC(s) have been notified.",
+            "notifications_sent": 2
+        }
+        """
+        from .models import Alert
+        from core.notification_service import notification_service
+        from core.models import UserRole
+        
+        # Parse request data from frontend
+        token_id = request.data.get('token')
+        emergency_type = request.data.get('type', 'OTHER')
+        message = request.data.get('message', '')
+        severity = request.data.get('severity', 'CRITICAL')
+        
+        # Validate required fields
+        if not token_id:
+            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not message:
+           message = 'No additional details provided.'
+        
+        # Get trip from token
+        try:
+            trip = Trip.objects.select_related('vehicle', 'ms', 'dbs', 'driver', 'token').get(token__token_no=token_id)
+        except Trip.DoesNotExist:
+            return Response({'error': 'Invalid token or trip not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get MS station from trip
+        ms = trip.ms
+        if not ms and trip.dbs:
+            ms = trip.dbs.parent_station
+        
+        # Create the alert with trip_id and station_id (MS)
+        alert = Alert.objects.create(
+            type=emergency_type,  # Store the actual emergency type from frontend
+            severity=severity,
+            message=message,
+            trip=trip,
+            station=ms  # Store MS station ID
+        )
+        
+        # Update trip status to EMERGENCY
+        if trip.status not in ['COMPLETED', 'CANCELLED', 'EMERGENCY']:
+            trip.status = 'EMERGENCY'
+            trip.step_data = {
+                **trip.step_data, 
+                'emergency_reported': True,
+                'emergency_type': emergency_type,
+                'emergency_at': timezone.now().isoformat(),
+                'alert_id': alert.id
+            }
+            trip.save(update_fields=['status', 'step_data'])
+        
+        # Send notifications to all EICs for this MS
+        driver = trip.driver
+        notifications_sent = 0
+        if ms:
+            try:
+                eic_roles = UserRole.objects.filter(
+                    station=ms,
+                    role__code='EIC',
+                    active=True
+                )
+                
+                for eic_role in eic_roles:
+                    if eic_role.user:
+                        notification_service.send_to_user(
+                            user=eic_role.user,
+                            title=f"🚨 EMERGENCY: {emergency_type}",
+                            body=f"Driver: {driver.full_name if driver else 'Unknown'}\n{message[:100]}",
+                            data={
+                                'type': 'EMERGENCY',
+                                'emergency_type': emergency_type,
+                                'alert_id': str(alert.id),
+                                'trip_id': str(trip.id),
+                                'token': token_id,
+                                'driver_name': driver.full_name if driver else None,
+                                'vehicle_no': trip.vehicle.registration_no if trip.vehicle else None,
+                                'severity': severity
+                            }
+                        )
+                        notifications_sent += 1
+                        logger.info(f"Emergency notification sent to EIC: {eic_role.user.email}")
+            except Exception as e:
+                logger.error(f"Error sending emergency notifications: {e}")
+        
+        logger.warning(f"EMERGENCY REPORTED - Trip {trip.id}, Token {token_id}, Type: {emergency_type}")
+        
+        return Response({
+            'success': True,
+            'alert_id': alert.id,
+            'trip_id': trip.id,
+            'message': f'Emergency reported. {notifications_sent} EIC(s) have been notified.',
+            'notifications_sent': notifications_sent
+        })
