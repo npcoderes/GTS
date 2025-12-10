@@ -5,3 +5,4 @@ __pycache__/
 db.sqlite3
 logs/*.log
 staticfiles/
+celerybeat-schedule*
