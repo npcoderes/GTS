@@ -13,6 +13,20 @@ class VehicleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vehicle
         fields = '__all__'
+        extra_kwargs = {
+            'vendor': {'required': False},
+        }
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user') and not validated_data.get('vendor'):
+            validated_data['vendor'] = request.user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # Don't allow changing vendor during update, keep the original
+        validated_data.pop('vendor', None)
+        return super().update(instance, validated_data)
 
 class DriverSerializer(serializers.ModelSerializer):
     vendor_details = UserSerializer(source='vendor', read_only=True)
@@ -30,16 +44,40 @@ class DriverSerializer(serializers.ModelSerializer):
             'vendor': {'required': False},
         }
 
+    def validate_assigned_vehicle(self, value):
+        """Validate that a vehicle can have maximum 2 drivers assigned."""
+        if value is None:
+            return value
+            
+        # Get current instance (for update case)
+        instance = getattr(self, 'instance', None)
+        
+        # Count drivers currently assigned to this vehicle
+        current_driver_count = Driver.objects.filter(assigned_vehicle=value).count()
+        
+        # If updating and driver already has this vehicle, don't count them
+        if instance and instance.assigned_vehicle_id == value.id:
+            return value
+            
+        # Check if vehicle already has 2 drivers
+        if current_driver_count >= 2:
+            raise serializers.ValidationError(
+                f"Vehicle {value.registration_no} already has 2 drivers assigned. Maximum 2 drivers per vehicle allowed."
+            )
+        
+        return value
+
     def create(self, validated_data):
         email = validated_data.pop('email', None)
         password = validated_data.pop('password', None)
+        phone = validated_data.get('phone')
         
         request = self.context.get('request')
         if request and hasattr(request, 'user') and not validated_data.get('vendor'):
             validated_data['vendor'] = request.user
             
-        if not email or not password:
-            raise serializers.ValidationError("Email and Password are required for new driver.")
+        if not email or not password or not phone:
+            raise serializers.ValidationError("Email, Phone, and Password are required for new driver.")
             
         from core.models import User, Role, UserRole
         from django.db import transaction
@@ -47,11 +85,14 @@ class DriverSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             if User.objects.filter(email=email).exists():
                 raise serializers.ValidationError({"email": "User with this email already exists."})
+            if User.objects.filter(phone=phone).exists():
+                raise serializers.ValidationError({"phone": "User with this phone already exists."})
                 
             user = User.objects.create_user(
                 email=email, 
                 password=password, 
-                full_name=validated_data.get('full_name', '')
+                full_name=validated_data.get('full_name', ''),
+                phone=phone
             )
             
             role, _ = Role.objects.get_or_create(code='DRIVER', defaults={'name': 'Driver'})
@@ -61,6 +102,14 @@ class DriverSerializer(serializers.ModelSerializer):
             driver = super().create(validated_data)
                     
         return driver
+
+    def update(self, instance, validated_data):
+        # Don't allow changing vendor during update, keep the original
+        validated_data.pop('vendor', None)
+        # Remove email/password from update - can't change driver credentials here
+        validated_data.pop('email', None)
+        validated_data.pop('password', None)
+        return super().update(instance, validated_data)
 
 class ShiftSerializer(serializers.ModelSerializer):
     driver_details = DriverSerializer(source='driver', read_only=True)

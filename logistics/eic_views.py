@@ -829,93 +829,93 @@ class EICNetworkOverviewView(views.APIView):
 
 
 
-class EICReconciliationReportView(views.APIView):
-    """
-    API Path: GET /api/eic/reconciliation-reports
-    List reconciliation reports for review.
-    """
-    """
-    GET /api/eic/reconciliation-reports/
-    Returns reconciliation reports with variance analysis.
-    POST /api/eic/reconciliation-reports/{id}/action/ - Trigger corrective action
-    """
-    def get(self, request):
-        # Filter params
-        status_filter = request.query_params.get('status', 'ALL')
-        severity_filter = request.query_params.get('severity', 'ALL')
+# class EICReconciliationReportView(views.APIView):
+#     """
+#     API Path: GET /api/eic/reconciliation-reports
+#     List reconciliation reports for review.
+#     """
+#     """
+#     GET /api/eic/reconciliation-reports/
+#     Returns reconciliation reports with variance analysis.
+#     POST /api/eic/reconciliation-reports/{id}/action/ - Trigger corrective action
+#     """
+#     def get(self, request):
+#         # Filter params
+#         status_filter = request.query_params.get('status', 'ALL')
+#         severity_filter = request.query_params.get('severity', 'ALL')
         
-        # Get reconciliation records with variance
-        reconciliations = Reconciliation.objects.select_related(
-            'trip', 'trip__ms', 'trip__dbs'
-        ).order_by('-created_at')
+#         # Get reconciliation records with variance
+#         reconciliations = Reconciliation.objects.select_related(
+#             'trip', 'trip__ms', 'trip__dbs'
+#         ).order_by('-created_at')
         
-        reports = []
-        for rec in reconciliations:
-            trip = rec.trip
-            if not trip:
-                continue
+#         reports = []
+#         for rec in reconciliations:
+#             trip = rec.trip
+#             if not trip:
+#                 continue
                 
-            # Calculate variance
-            ms_qty = rec.ms_quantity or 0
-            dbs_qty = rec.dbs_quantity or 0
-            variance = abs(ms_qty - dbs_qty)
-            variance_pct = (variance / ms_qty * 100) if ms_qty > 0 else 0
+#             # Calculate variance
+#             ms_qty = rec.ms_quantity or 0
+#             dbs_qty = rec.dbs_quantity or 0
+#             variance = abs(ms_qty - dbs_qty)
+#             variance_pct = (variance / ms_qty * 100) if ms_qty > 0 else 0
             
-            # Determine severity
-            if variance_pct > 1.0:
-                severity = 'HIGH'
-            elif variance_pct > 0.5:
-                severity = 'MEDIUM'
-            else:
-                severity = 'LOW'
+#             # Determine severity
+#             if variance_pct > 1.0:
+#                 severity = 'HIGH'
+#             elif variance_pct > 0.5:
+#                 severity = 'MEDIUM'
+#             else:
+#                 severity = 'LOW'
             
-            # Map status
-            if rec.status == 'PENDING':
-                report_status = 'REVIEW_PENDING'
-            elif rec.status == 'APPROVED':
-                report_status = 'RESOLVED'
-            elif rec.status == 'FLAGGED':
-                report_status = 'ACTION_PENDING'
-            else:
-                report_status = rec.status
+#             # Map status
+#             if rec.status == 'PENDING':
+#                 report_status = 'REVIEW_PENDING'
+#             elif rec.status == 'APPROVED':
+#                 report_status = 'RESOLVED'
+#             elif rec.status == 'FLAGGED':
+#                 report_status = 'ACTION_PENDING'
+#             else:
+#                 report_status = rec.status
             
-            # Apply filters
-            if status_filter != 'ALL' and report_status != status_filter:
-                continue
-            if severity_filter != 'ALL' and severity != severity_filter:
-                continue
+#             # Apply filters
+#             if status_filter != 'ALL' and report_status != status_filter:
+#                 continue
+#             if severity_filter != 'ALL' and severity != severity_filter:
+#                 continue
             
-            # Root cause signals based on variance type
-            signals = []
-            if variance_pct > 0.5:
-                signals.append('Variance exceeds threshold')
-            if ms_qty > dbs_qty:
-                signals.append('Transit loss detected')
-            elif dbs_qty > ms_qty:
-                signals.append('Meter discrepancy')
+#             # Root cause signals based on variance type
+#             signals = []
+#             if variance_pct > 0.5:
+#                 signals.append('Variance exceeds threshold')
+#             if ms_qty > dbs_qty:
+#                 signals.append('Transit loss detected')
+#             elif dbs_qty > ms_qty:
+#                 signals.append('Meter discrepancy')
             
-            reports.append({
-                'id': rec.id,
-                'msName': trip.ms.name if trip.ms else None,
-                'msStation': trip.ms.code if trip.ms else None,
-                'dbsStation': trip.dbs.code if trip.dbs else None,
-                'dbsName': trip.dbs.name if trip.dbs else None,
-                'reportingPeriod': rec.created_at.strftime('%b %Y'),
-                'variancePercentage': round(variance_pct, 2),
-                'volumeDiscrepancy': variance,
-                'financialImpact': int(variance * 50),  # Approx INR 50/scm
-                'currency': 'INR',
-                'severity': severity,
-                'status': report_status,
-                'rootCauseSignals': signals,
-                'recommendedAction': 'Review meter readings and conduct audit' if variance_pct > 0.5 else 'Monitor for next transfer',
-                'correctiveActions': [],  # Would come from separate model
-                'tripId': trip.id,
-                'msQuantity': ms_qty,
-                'dbsQuantity': dbs_qty
-            })
+#             reports.append({
+#                 'id': rec.id,
+#                 'msName': trip.ms.name if trip.ms else None,
+#                 'msStation': trip.ms.code if trip.ms else None,
+#                 'dbsStation': trip.dbs.code if trip.dbs else None,
+#                 'dbsName': trip.dbs.name if trip.dbs else None,
+#                 'reportingPeriod': rec.created_at.strftime('%b %Y'),
+#                 'variancePercentage': round(variance_pct, 2),
+#                 'volumeDiscrepancy': variance,
+#                 'financialImpact': int(variance * 50),  # Approx INR 50/scm
+#                 'currency': 'INR',
+#                 'severity': severity,
+#                 'status': report_status,
+#                 'rootCauseSignals': signals,
+#                 'recommendedAction': 'Review meter readings and conduct audit' if variance_pct > 0.5 else 'Monitor for next transfer',
+#                 'correctiveActions': [],  # Would come from separate model
+#                 'tripId': trip.id,
+#                 'msQuantity': ms_qty,
+#                 'dbsQuantity': dbs_qty
+#             })
         
-        return Response({'reports': reports})
+#         return Response({'reports': reports})
 
 
 class EICReconciliationActionView(views.APIView):
@@ -1238,7 +1238,7 @@ class EICAlertListView(views.APIView):
         results = []
         for alert in alerts:
             trip = alert.trip
-            results.append({
+            alert_data = {
                 'id': alert.id,
                 'type': alert.type,
                 'severity': alert.severity,
@@ -1254,7 +1254,9 @@ class EICAlertListView(views.APIView):
                 'ms_name': trip.ms.name if trip and trip.ms else None,
                 'dbs_name': trip.dbs.name if trip and trip.dbs else None,
                 'created_at': timezone.localtime(alert.created_at).isoformat()
-            })
+            }
+            
+            results.append(alert_data)
         
         return Response({
             'alerts': results,

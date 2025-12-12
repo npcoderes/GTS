@@ -213,7 +213,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         trips = (
         Trip.objects
         .filter(driver=driver)
-        .exclude(status='COMPLETED')   # <-- IMPORTANT: filter only non-completed trips
+        # .exclude(status='COMPLETED')  # show all trips history
         .select_related('ms', 'dbs', 'stock_request')
         .prefetch_related('dbs_decantings', 'ms_fillings')
         .order_by('-id')
@@ -251,6 +251,7 @@ class ShiftViewSet(viewsets.ModelViewSet):
         Prevents creating shifts for the same driver at overlapping times.
         """
         driver_id = request.data.get('driver')
+        vehicle_id = request.data.get('vehicle')
         start_time = request.data.get('start_time')
         end_time = request.data.get('end_time')
         
@@ -303,6 +304,24 @@ class ShiftViewSet(viewsets.ModelViewSet):
                         'message': f'Driver has a daily shift from {shift.start_time.strftime("%H:%M")} to {shift.end_time.strftime("%H:%M")}',
                         'existing_shift_id': shift.id
                     }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 3. Vehicle overlap check: prevent different drivers using the same vehicle at overlapping times
+        if vehicle_id and start_time and end_time and driver_id:
+            overlapping_vehicle = Shift.objects.filter(
+                vehicle_id=vehicle_id,
+                status__in=['PENDING', 'APPROVED'],
+                start_time__lt=end_time,
+                end_time__gt=start_time
+            ).exclude(driver_id=driver_id)
+
+            if overlapping_vehicle.exists():
+                conflict = overlapping_vehicle.first()
+                return Response({
+                    'error': 'Vehicle already scheduled',
+                    'message': f"Vehicle is in another driver's shift from {conflict.start_time.strftime('%Y-%m-%d %H:%M')} to {conflict.end_time.strftime('%Y-%m-%d %H:%M')}.",
+                    'existing_shift_id': conflict.id,
+                    'conflict_driver_id': conflict.driver_id
+                }, status=status.HTTP_400_BAD_REQUEST)
              
         # Set created_by to current user
         # Extract recurring flags from request
@@ -468,6 +487,8 @@ class TripCompleteView(views.APIView):
     """
     API Path: POST /api/driver/trip/complete
     Marks trip as completed when driver returns to MS.
+    Creates reconciliation record comparing MS filled vs DBS delivered quantities.
+    If variance > 0.5%, creates an Alert and notifies EIC.
     """
     def post(self, request):
         token_id = request.data.get('token')
@@ -477,6 +498,91 @@ class TripCompleteView(views.APIView):
         trip.ms_return_at = timezone.now()
         trip.completed_at = timezone.now()
         trip.save()
+        
+        # Create Reconciliation Record
+        reconciliation_alert_created = False
+        try:
+            # Get MS filled quantity
+            ms_filling = trip.ms_fillings.first()
+            ms_filled_qty = ms_filling.filled_qty_kg if ms_filling and ms_filling.filled_qty_kg else 0
+            
+            # Get DBS delivered quantity
+            dbs_decanting = trip.dbs_decantings.first()
+            dbs_delivered_qty = dbs_decanting.delivered_qty_kg if dbs_decanting and dbs_decanting.delivered_qty_kg else 0
+            
+            # Calculate difference and variance
+            if ms_filled_qty > 0:
+                diff_qty = ms_filled_qty - dbs_delivered_qty
+                variance_pct = (diff_qty / ms_filled_qty) * 100
+                
+                # Determine status (ALERT if variance > 0.5%)
+                reconciliation_status = 'ALERT' if abs(variance_pct) > 0.5 else 'OK'
+                
+                # Create reconciliation record
+                reconciliation = Reconciliation.objects.create(
+                    trip=trip,
+                    ms_filled_qty_kg=ms_filled_qty,
+                    dbs_delivered_qty_kg=dbs_delivered_qty,
+                    diff_qty=diff_qty,
+                    variance_pct=variance_pct,
+                    status=reconciliation_status
+                )
+                
+                # If variance exceeds threshold, notify EIC (Alert record creation disabled)
+                if reconciliation_status == 'ALERT':
+                    reconciliation_alert_created = True
+                    
+                    # Notify EIC of the MS station
+                    try:
+                        from core.models import UserRole
+                        from core.notification_service import NotificationService
+                        
+                        ms = trip.ms
+                        if ms:
+                            eic_roles = UserRole.objects.filter(
+                                station=ms,
+                                role__code='EIC',
+                                active=True
+                            ).select_related('user')
+                            
+                            notifier = NotificationService()
+                            driver_name = trip.driver.full_name if trip.driver else 'Unknown'
+                            vehicle_no = trip.vehicle.registration_no if trip.vehicle else 'Unknown'
+                            
+                            for eic_role in eic_roles:
+                                if eic_role.user:
+                                    notifier.send_to_user(
+                                        user=eic_role.user,
+                                        title="⚠️ Variance Alert",
+                                        body=f"Trip {trip.token.token_no if trip.token else trip.id}: {abs(variance_pct):.2f}% variance detected",
+                                        data={
+                                            'type': 'VARIANCE_ALERT',
+                                            'reconciliation_id': str(reconciliation.id),
+                                            'trip_id': str(trip.id),
+                                            'token': trip.token.token_no if trip.token else None,
+                                            'variance_pct': str(round(abs(variance_pct), 2)),
+                                            'ms_filled_qty': str(ms_filled_qty),
+                                            'dbs_delivered_qty': str(dbs_delivered_qty),
+                                            'driver_name': driver_name,
+                                            'vehicle_no': vehicle_no,
+                                        },
+                                        notification_type='alert'
+                                    )
+                                    logger.info(f"Sent variance alert to EIC {eic_role.user.email} for trip {trip.id}")
+                    except Exception as e:
+                        logger.error(f"Failed to notify EIC about variance alert for trip {trip.id}: {e}")
+                        
+        except Exception as e:
+            # Log error but don't block trip completion
+            logger.warning(f"Failed to create reconciliation for trip {trip.id}: {e}")
+            
+        # SAP Sync (GTS11) - Non-blocking
+        try:
+            from core.sap_integration import sap_service
+            sap_service.sync_trip_to_sap(trip)
+        except Exception as e:
+            logger.error(f"Failed to sync trip {trip.id} to SAP: {e}")
+        
         return Response({'status': 'completed'})
 
 class EmergencyReportView(views.APIView):

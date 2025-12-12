@@ -22,6 +22,25 @@ from .permission_serializers import (
 from .models import Role, User
 
 
+def snake_to_camel(snake_str):
+    """Convert snake_case string to camelCase."""
+    components = snake_str.split('_')
+    return components[0] + ''.join(x.title() for x in components[1:])
+
+
+def normalize_permissions(permissions_dict):
+    """
+    Normalize permissions to include both snake_case and camelCase keys.
+    This ensures frontend compatibility regardless of which format they use.
+    """
+    normalized = {}
+    for key, value in permissions_dict.items():
+        normalized[key] = value
+        camel_key = snake_to_camel(key)
+        normalized[camel_key] = value
+    return normalized
+
+
 def notify_user_permission_change(user_id):
     """
     Send WebSocket notification to a specific user about permission changes.
@@ -102,7 +121,8 @@ def get_user_permissions_from_db(user):
         # Check if user is Super Admin - they get all permissions
         is_super_admin = user.user_roles.filter(role__code='SUPER_ADMIN', active=True).exists()
         if is_super_admin:
-            return {code: True for code in result}
+            all_true = {code: True for code in result}
+            return normalize_permissions(all_true)
         
         # Get user's active role codes
         user_role_codes = list(user.user_roles.filter(active=True).values_list('role__code', flat=True))
@@ -132,7 +152,8 @@ def get_user_permissions_from_db(user):
             if up.permission.code in result:
                 result[up.permission.code] = up.granted
         
-        return result
+        # Normalize to include both snake_case and camelCase
+        return normalize_permissions(result)
     except Exception:
         # Table doesn't exist (migrations not run), return None to trigger fallback
         return None

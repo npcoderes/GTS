@@ -56,32 +56,67 @@ class CustomerDashboardView(views.APIView):
         if not dbs:
             return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
 
-        trips = Trip.objects.select_related('ms', 'dbs', 'driver').filter(dbs=dbs)
-        total_trips = trips.count()
-        completed = trips.filter(status='COMPLETED').count()
-        active = trips.exclude(status__in=['COMPLETED', 'CANCELLED']).count()
-
-        recent = trips.order_by('-created_at')[:5]
-        recent_trips = []
-        for trip in recent:
-            recent_trips.append({
-                'id': f'{trip.id}',
-                'status': trip.status,
-                'route': f"{trip.ms.name if trip.ms else 'MS'} → {trip.dbs.name if trip.dbs else 'DBS'}",
-                'driverName': trip.driver.full_name if trip.driver else 'Unassigned',
-                'scheduledTime': timezone.localtime(trip.started_at or trip.ms_departure_at or trip.created_at).isoformat() if (trip.started_at or trip.ms_departure_at or trip.created_at) else None,
-            })
-
-        stats = [
-            {'key': 'totalTrips', 'label': 'Trips', 'value': total_trips},
-            {'key': 'pending', 'label': 'Active', 'value': active},
-            {'key': 'completed', 'label': 'Completed', 'value': completed},
+        relevant_statuses = [
+            'DISPATCHED', 'IN_TRANSIT', 'ARRIVED_AT_DBS', 'AT_DBS',
+            'DECANTING_STARTED', 'DECANTING_COMPLETED', 'DECANTING_CONFIRMED',
+            'COMPLETED'
         ]
 
-        return Response({
-            'stats': stats,
-            'recentTrips': recent_trips,
-        })
+        trips = Trip.objects.filter(dbs=dbs, status__in=relevant_statuses).select_related(
+            'ms', 'dbs', 'vehicle'
+        ).prefetch_related('ms_fillings', 'dbs_decantings')
+
+        summary = {
+            'pending': 0,
+            'inProgress': 0,
+            'completed': 0
+        }
+
+        trip_list = []
+
+        for trip in trips:
+            category = 'pending'
+            if trip.status in ['DISPATCHED', 'IN_TRANSIT', 'ARRIVED_AT_DBS', 'AT_DBS']:
+                summary['pending'] += 1
+            elif trip.status == 'DECANTING_STARTED':
+                category = 'inProgress'
+                summary['inProgress'] += 1
+            elif trip.status in ['COMPLETED', 'DECANTING_COMPLETED']:
+                category = 'completed'
+                summary['completed'] += 1
+
+            decanting = trip.dbs_decantings.first()
+            filling = trip.ms_fillings.first()
+
+            if decanting and decanting.delivered_qty_kg:
+                quantity = float(decanting.delivered_qty_kg)
+            elif filling and filling.filled_qty_kg:
+                quantity = float(filling.filled_qty_kg)
+            else:
+                quantity = "Not Available"
+
+            trip_list.append({
+                "id": f"{trip.id}",
+                "status": 'AT_DBS' if trip.status == 'DECANTING_CONFIRMED' else trip.status,
+                "route": f"{trip.ms.name} → {trip.dbs.name}",
+                "msName": trip.ms.name,
+                "dbsName": trip.dbs.name,
+                "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
+                "completedTime": timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
+                "quantity": quantity,
+                "vehicleNo": trip.vehicle.registration_no if trip.vehicle else None
+            })
+
+        response_data = {
+            "station": {
+                "dbsName": dbs.name,
+                "location": dbs.city or dbs.address or "Unknown Location"
+            },
+            "summary": summary,
+            "trips": trip_list
+        }
+
+        return Response(response_data)
 
 
 class CustomerStocksView(views.APIView):

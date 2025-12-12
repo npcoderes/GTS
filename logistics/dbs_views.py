@@ -46,7 +46,7 @@ class DBSDashboardView(views.APIView):
         ]
         trips = Trip.objects.filter(dbs=dbs, status__in=relevant_statuses).select_related(
             'ms', 'dbs', 'vehicle'
-        ).prefetch_related('ms_fillings')
+        ).prefetch_related('ms_fillings', 'dbs_decantings')
         
         # Calculate Summary Stats
         summary = {
@@ -70,18 +70,32 @@ class DBSDashboardView(views.APIView):
                 category = 'completed'
                 summary['completed'] += 1
             
-            # Get Quantity from MSFilling
+            # Smart Quantity Display based on Trip Progress
+            # 1. If DBS decanting done → use DBS delivered quantity
+            # 2. Else if MS filling done → use MS filled quantity  
+            # 3. Else (trip just started/pending) → show "Not Available"
+            decanting = trip.dbs_decantings.first()
             filling = trip.ms_fillings.first()
-            quantity = filling.filled_qty_kg if filling else trip.vehicle.capacity_kg
+            
+            if decanting and decanting.delivered_qty_kg:
+                # DBS decanting completed - use actual delivered quantity
+                quantity = float(decanting.delivered_qty_kg)
+            elif filling and filling.filled_qty_kg:
+                # MS filling completed - use filled quantity
+                quantity = float(filling.filled_qty_kg)
+            else:
+                # Trip just started or in early stages - quantity not yet known
+                quantity = "Not Available"
 
             # Format Trip Data
             trip_data = {
                 "id": f"{trip.id}", # Format ID
-                "status": trip.status,
+                "status": 'AT_DBS' if trip.status == 'DECANTING_CONFIRMED' else trip.status,
                 "route": f"{trip.ms.name} → {trip.dbs.name}",
                 "msName": trip.ms.name,
                 "dbsName": trip.dbs.name,
                 "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else None, # Using started_at as proxy for scheduled
+                "completedTime": timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
                 "quantity": quantity,
                 "vehicleNo": trip.vehicle.registration_no
             }
@@ -454,7 +468,6 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             data.append({
                 "id": req.id,
                 "status": req.status,
-                "requested_qty_kg": float(req.requested_qty_kg) if req.requested_qty_kg else 0,
                 "requested_by_date": req.requested_by_date,
                 "requested_by_time": req.requested_by_time,
                 "created_at": req.created_at
@@ -544,7 +557,7 @@ class DBSStockTransferListView(views.APIView):
             
             # Determine status category
             is_completed = trip.status in ['COMPLETED', 'DECANTING_COMPLETED']
-            is_in_progress = trip.status in ['DISPATCHED', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_STARTED']
+            is_in_progress = trip.status in ['DISPATCHED', 'IN_TRANSIT', 'AT_DBS']
             
             # Update summary
             summary['totalTransfers'] += 1

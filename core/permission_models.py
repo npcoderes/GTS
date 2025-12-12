@@ -150,10 +150,16 @@ class UserPermission(models.Model):
 # Default permissions to be seeded
 DEFAULT_PERMISSIONS = [
     {
-        'code': 'can_raise_manual_request',
-        'name': 'Raise Manual Request',
-        'description': 'Can create manual stock requests',
+        'code': 'can_submit_manual_request',
+        'name': 'Submit Manual Request',
+        'description': 'Can submit manual stock requests',
         'category': 'requests'
+    },
+    {
+        'code': 'can_accept_trips',
+        'name': 'Accept Trips',
+        'description': 'Can accept incoming trips',
+        'category': 'trips'
     },
     {
         'code': 'can_confirm_arrival',
@@ -203,19 +209,26 @@ DEFAULT_PERMISSIONS = [
         'description': 'Can manage station clusters and mappings',
         'category': 'stations'
     },
+    {
+        'code': 'can_trigger_correction_actions',
+        'name': 'Trigger Correction Actions',
+        'description': 'Can trigger correction actions for trips',
+        'category': 'trips'
+    },
 ]
 
 # Default role-permission mappings (matching current hardcoded logic)
 DEFAULT_ROLE_PERMISSIONS = {
-    'DBS_OPERATOR': ['can_raise_manual_request', 'can_confirm_arrival', 'can_record_readings', 'can_view_trips'],
-    'MS_OPERATOR': ['can_confirm_arrival', 'can_record_readings', 'can_start_filling', 'can_view_trips'],
-    'EIC': ['can_approve_request', 'can_manage_drivers', 'can_override_tokens', 'can_manage_clusters', 'can_view_trips'],
-    'VENDOR': ['can_manage_drivers', 'can_view_trips'],
-    'DRIVER': ['can_confirm_arrival', 'can_view_trips'],
+    'DBS_OPERATOR': ['can_submit_manual_request'],
+    'MS_OPERATOR': [],  # MS dashboard is default - no special permissions needed
+    'EIC': ['can_manage_clusters', 'can_manage_drivers', 'can_trigger_correction_actions'],
+    'SGL_TRANSPORT_VENDOR': ['can_manage_drivers'],
+    'DRIVER': [],  # No permissions for driver
     'SUPER_ADMIN': [  # All permissions
-        'can_raise_manual_request', 'can_confirm_arrival', 'can_record_readings',
-        'can_start_filling', 'can_approve_request', 'can_manage_drivers',
-        'can_view_trips', 'can_override_tokens', 'can_manage_clusters'
+        'can_submit_manual_request', 'can_accept_trips', 'can_confirm_arrival', 
+        'can_record_readings', 'can_start_filling', 'can_approve_request', 
+        'can_manage_drivers', 'can_view_trips', 'can_override_tokens', 
+        'can_manage_clusters', 'can_trigger_correction_actions'
     ],
-    'SGL_CUSTOMER': ['can_view_trips'],
+    'SGL_CUSTOMER': ['can_accept_trips'],
 }

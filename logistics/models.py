@@ -86,9 +86,9 @@ class StockRequest(models.Model):
     ]
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
-        ('QUEUED', 'Queued'),
+        ('QUEUED', 'Queued'),   #not reuired 
         ('REJECTED', 'Rejected'),
-        ('CANCELLED', 'Cancelled'),
+        ('CANCELLED', 'Cancelled'), #not reuired 
         ('APPROVED', 'Approved'),
         ('ASSIGNING', 'Assigning Driver'),
         ('ASSIGNED', 'Driver Assigned'),

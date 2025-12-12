@@ -8,9 +8,10 @@ from .views import (
 from .eic_views import (
     EICStockRequestViewSet, EICDashboardView, 
     EICDriverApprovalView, EICPermissionsView,
-    EICNetworkOverviewView, EICReconciliationReportView, EICReconciliationActionView,
+    EICNetworkOverviewView, EICReconciliationActionView,
     EICVehicleTrackingView, EICIncomingStockRequestsView, EICAlertListView
 )
+from .reconciliation_views import ReconciliationListView
 from .customer_views import (
     CustomerDashboardView,
     CustomerStocksView,
@@ -61,7 +62,8 @@ urlpatterns = [
     path('eic/driver-approvals/pending', EICDriverApprovalView.as_view(), name='eic-driver-approvals'),
     path('eic/permissions', EICPermissionsView.as_view(), name='eic-permissions'),
     path('eic/network-overview', EICNetworkOverviewView.as_view(), name='eic-network-overview'),
-    path('eic/reconciliation-reports', EICReconciliationReportView.as_view(), name='eic-reconciliation-reports'),
+    # path('eic/reconciliation-reports', EICReconciliationReportView.as_view(), name='eic-reconciliation-reports'),
+    path('eic/reconciliation-reports/', ReconciliationListView.as_view(), name='reconciliation-list'),
     path('eic/reconciliation-reports/<int:report_id>/action', EICReconciliationActionView.as_view(), name='eic-reconciliation-action'),
     path('eic/vehicles/active', EICVehicleTrackingView.as_view(), name='eic-vehicle-tracking'),
     path('eic/incoming-stock-requests', EICIncomingStockRequestsView.as_view(), name='eic-incoming-stock-requests'),

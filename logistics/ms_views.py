@@ -80,29 +80,31 @@ class MSDashboardView(views.APIView):
         ).prefetch_related('ms_fillings').order_by('-created_at', '-id')[:100] # Limit to recent 100 for dashboard
         
         summary = {
-            'filling': 0,
-            'dispatched': 0,
-            'completed': 0,
-            'cancelled': 0
+            'pending': 0,
+            'inProgress': 0,
+            'completed': 0
         }
         
         trip_list = []
         
         for trip in trips:
             status_val = trip.status
+            display_status = status_val
+            
+            # Map status for display
+            if status_val == 'DECANTING_CONFIRMED':
+                display_status = 'AT_DBS'
             
             # Map to summary counts
+            # Pending: At MS (Pending, Arrived, Filling, Filled but not dispatch)
             if status_val in ['PENDING', 'AT_MS', 'FILLING', 'FILLED']:
-                summary['filling'] += 1
+                summary['pending'] += 1
+            # In Progress: On the road or at DBS
             elif status_val in ['DISPATCHED', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']: 
-                # Note: DECANTING_CONFIRMED is effectively still "out there" until fully COMPLETED?
-                # Or should DECANTING_CONFIRMED count as completed? 
-                # Usually dispatch means valid active trip leaving MS.
-                summary['dispatched'] += 1
+                summary['inProgress'] += 1
+            # Completed
             elif status_val == 'COMPLETED':
                 summary['completed'] += 1
-            elif status_val == 'CANCELLED':
-                summary['cancelled'] += 1
             
             # Get Quantity (Filled quantity)
             filling = trip.ms_fillings.first()
@@ -115,9 +117,10 @@ class MSDashboardView(views.APIView):
             trip_list.append({
                 "id": f"{trip.id}",
                 "dbsId": trip.dbs.code if trip.dbs else "",
-                "status": status_val,
+                "status": display_status,
                 "quantity": quantity,
                 "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else timezone.localtime(timezone.now()).isoformat(), # Fallback
+                "completedTime": timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
                 "dbsName": trip.dbs.name if trip.dbs else "Unknown",
                 "route": f"{ms.name} -> {trip.dbs.name}" if trip.dbs else f"{ms.name} -> ?"
             })

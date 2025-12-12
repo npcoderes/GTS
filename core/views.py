@@ -1,19 +1,55 @@
 """
 API Views for GTS
 """
+import logging
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
+from django.utils import timezone
 from django.db.models import Q
+from django.contrib.auth.hashers import make_password, check_password
 from core.models import User, Role, UserRole, Station, Route, MSDBSMap
 from core.serializers import (
     UserSerializer, RoleSerializer, UserRoleSerializer,
-    StationSerializer, LoginSerializer, RouteSerializer, MSDBSMapSerializer
+    StationSerializer, LoginSerializer, RouteSerializer, MSDBSMapSerializer,
+    MPINLoginSerializer, SetMPINSerializer, ChangePasswordSerializer,
+    PasswordResetRequestSerializer, PasswordResetVerifySerializer, PasswordResetConfirmSerializer
 )
 from core.logging_utils import log_auth_event, log_user_action
+from core.sap_integration import sap_service
+
+from core.utils import send_welcome_email, send_otp_email, send_reset_success_email
+from core.models import PasswordResetSession
+import uuid
+import random
+
+logger = logging.getLogger(__name__)
+
+
+def snake_to_camel(snake_str):
+    """Convert snake_case string to camelCase."""
+    components = snake_str.split('_')
+    return components[0] + ''.join(x.title() for x in components[1:])
+
+
+def normalize_permissions(permissions_dict):
+    """
+    Normalize permissions to include both snake_case and camelCase keys.
+    This ensures frontend compatibility regardless of which format they use.
+    
+    Example: {'can_view_trips': True} becomes {'can_view_trips': True, 'canViewTrips': True}
+    """
+    normalized = {}
+    for key, value in permissions_dict.items():
+        # Keep original snake_case
+        normalized[key] = value
+        # Add camelCase version
+        camel_key = snake_to_camel(key)
+        normalized[camel_key] = value
+    return normalized
 
 
 def get_primary_role(user):
@@ -43,7 +79,8 @@ def get_user_permissions(role_code, user=None):
     """
     # Default permissions structure
     default_permissions = {
-        'can_raise_manual_request': False,
+        'can_submit_manual_request': False,
+        'can_accept_trips': False,
         'can_confirm_arrival': False,
         'can_record_readings': False,
         'can_start_filling': False,
@@ -52,6 +89,7 @@ def get_user_permissions(role_code, user=None):
         'can_view_trips': True,  # Base permission
         'can_override_tokens': False,
         'can_manage_clusters': False,
+        'can_trigger_correction_actions': False,
     }
     
     # If we have a user object, try to get permissions from database
@@ -69,56 +107,122 @@ def get_user_permissions(role_code, user=None):
     
     if role_code == 'DBS_OPERATOR':
         permissions.update({
-            'can_raise_manual_request': True,
-            'can_confirm_arrival': True,
-            'can_record_readings': True
+            'can_submit_manual_request': True
         })
     elif role_code == 'MS_OPERATOR':
-        permissions.update({
-            'can_confirm_arrival': True,
-            'can_record_readings': True,
-            'can_start_filling': True
-        })
+        # MS dashboard is default - no special permissions needed
+        pass
     elif role_code == 'EIC':
         permissions.update({
-            'can_approve_request': True,
-            'can_manage_drivers': True,
-            'can_override_tokens': True,
             'can_manage_clusters': True,
+            'can_manage_drivers': True,
+            'can_trigger_correction_actions': True,
         })
     elif role_code == 'SUPER_ADMIN':
         # Super admin gets all permissions
         permissions = {key: True for key in permissions}
-    elif role_code == 'VENDOR':
+    elif role_code == 'SGL_TRANSPORT_VENDOR':
         permissions.update({
             'can_manage_drivers': True
         })
     elif role_code == 'DRIVER':
+        # No permissions for driver
+        pass
+    elif role_code == 'SGL_CUSTOMER':
         permissions.update({
-            'can_confirm_arrival': True
+            'can_accept_trips': True
         })
-        
-    return permissions
+    
+    # Normalize to include both snake_case and camelCase
+    return normalize_permissions(permissions)
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
-    """Login endpoint with enhanced response"""
+    """
+    Unified Login endpoint (Email/Phone + Password/MPIN).
+    Checks for Force Reset.
+    """
     serializer = LoginSerializer(data=request.data)
     if serializer.is_valid():
-        email = serializer.validated_data['email']
-        password = serializer.validated_data['password']
+        username = serializer.validated_data['username']
+        password = serializer.validated_data.get('password')
+        role = serializer.validated_data.get('role')
+        mpin = serializer.validated_data.get('mpin')
         
-        user = authenticate(request, username=email, password=password)
+        # 1. Resolve User (Email or Phone)
+        user = None
+        user_input = username # Keep original input for logging
         
-        if user:
+        if '@' not in username:
+            # Assume phone, find user by phone first
+            try:
+                user_obj = User.objects.get(phone=username)
+                username = user_obj.email # Use email for authenticate() if using password
+                user = user_obj # We have the user object directly
+            except User.DoesNotExist:
+                # If using password, authenticate might still find it if username was actually email? 
+                # But we checked '@'. So it's likely invalid user.
+                pass
+        else:
+             # It's an email
+             try:
+                 user = User.objects.get(email=username)
+             except User.DoesNotExist:
+                 pass
+
+        # 2. Authenticate
+        auth_success = False
+        login_method = 'UNKNOWN'
+        
+        if password:
+            login_method = 'PASSWORD'
+            # Use Django's authenticate which handles hashing
+            # It expects 'username' (which we set to email above) and 'password'
+            # Pass request._request to ensure it's a Django HttpRequest, avoiding AssertionError
+            authenticated_user = authenticate(request=request._request, username=username, password=password)
+            if authenticated_user:
+                 user = authenticated_user
+                 auth_success = True
+        
+        elif mpin:
+            login_method = 'MPIN'
+            # Verify MPIN manually
+            if user:
+                 if user.mpin and check_password(mpin, user.mpin):
+                      auth_success = True
+                 else:
+                      # MPIN specific error handling could be here
+                      pass
+        
+        if auth_success and user:
+            # Success Flow
             token, created = Token.objects.get_or_create(user=user)
+            
+            # Check for force password reset
+            reset_required = user.is_password_reset_required
             
             # Get primary role and context
             primary_role_assign = get_primary_role(user)
-            role_code = primary_role_assign.role.code if primary_role_assign else 'GUEST'
+            role_code = primary_role_assign.role.code if primary_role_assign else None
+            role_name = primary_role_assign.role.name if primary_role_assign else None
             station = primary_role_assign.station if primary_role_assign else None
             
+            # Validate Role (if provided) - Case insensitive, check both code and name
+            if role:
+                input_role = str(role).strip().upper()
+                user_role_code = str(role_code).upper() if role_code else ''
+                user_role_name = str(role_name).upper() if role_name else ''
+                
+                if input_role != user_role_code and input_role != user_role_name:
+                     return Response({
+                        'message': 'User role does not match'
+                    }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            if not role_code:
+                return Response({
+                    'message': 'User role or station not found'
+                }, status=status.HTTP_401_UNAUTHORIZED)
             # Construct response
             user_data = {
                 'id': user.id,
@@ -128,27 +232,127 @@ def login_view(request):
                 'dbsName': station.name if station and station.type == 'DBS' else None,
                 'msId': station.id if station and station.type == 'MS' else None,
                 'msName': station.name if station and station.type == 'MS' else None,
-                'permissions': get_user_permissions(role_code, user)
+                'permissions': get_user_permissions(role_code, user),
+                'mpin_set': bool(user.mpin) # Inform client if MPIN is set
             }
             
             # Log successful login
             ip_address = request.META.get('REMOTE_ADDR', '')
-            log_auth_event('LOGIN', email, ip_address, True)
+            log_auth_event(f'LOGIN_{login_method}', user.email, ip_address, True)
             
             return Response({
                 'token': token.key,
                 'user': user_data,
-                'message': 'Login successful'
+                'message': f'Login successful ({login_method})',
+                'reset_required': reset_required
             })
         else:
             # Log failed login
             ip_address = request.META.get('REMOTE_ADDR', '')
-            log_auth_event('LOGIN', email, ip_address, False, 'Invalid credentials')
+            log_auth_event(f'LOGIN_{login_method}', user_input, ip_address, False, 'Invalid credentials')
             
             return Response({
                 'message': 'Invalid credentials'
             }, status=status.HTTP_401_UNAUTHORIZED)
     
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def set_mpin(request):
+    """
+    Set or Update MPIN for the authenticated user.
+    Requires current password for verification if setting for first time? 
+    The serializer checks for password field.
+    """
+    serializer = SetMPINSerializer(data=request.data)
+    if serializer.is_valid():
+        password = serializer.validated_data['password']
+        mpin = serializer.validated_data['mpin']
+        
+        user = request.user
+        
+        # Verify password
+        if not user.check_password(password):
+             return Response({'message': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Save hashed MPIN
+        user.mpin = make_password(mpin)
+        user.save(update_fields=['mpin'])
+        
+        log_user_action(user, 'UPDATE', 'User', user.id, 'Set MPIN', True)
+        
+        return Response({'message': 'MPIN set successfully'})
+    
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny]) # Modified: Effectively requires auth context if no username provided, but let's handle permissive for now.
+# Revised: Since login now returns token even for reset, we can rely on IsAuthenticated for simplest flow? 
+# BUT `login_view` returns token. So Client will have token.
+# Let's support both: Token based (no old password needed if reset required?) or Credentials based.
+# User asked "do not ask old password". Assuming they are logged in.
+def change_password(request):
+    """
+    Change password.
+    Supports authenticated user (via Token).
+    If authenticated, `old_password` is Optional (if we trust the active session, especially for force reset).
+    Or strict: Always require old password unless `is_password_reset_required` is True?
+    Let's go with: If Authenticated, old_password is OPTIONAL.
+    """
+    serializer = ChangePasswordSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        old_password = serializer.validated_data.get('old_password')
+        new_password = serializer.validated_data['new_password']
+        
+        user = None
+        if request.user.is_authenticated:
+            user = request.user
+        else:
+             # Fallback for unauthenticated requests (legacy force reset flow if they didn't use token)
+             username = request.data.get('username')
+             if username:
+                if '@' in username:
+                    user = User.objects.filter(email=username).first()
+                else:
+                    user = User.objects.filter(phone=username).first()
+        
+        if not user:
+             return Response({'message': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # Verify old password ONLY if provided.
+        # If NOT provided, we assume the Token/Session is sufficient proof (simpler flow requested by user).
+        # We might want to enforce "Only if reset_required" for security, but user asked for simple flow.
+        if old_password:
+            if not user.check_password(old_password):
+                return Response({'message': 'Invalid old password'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Security Check: If NO old password, ensure user IS authenticated.
+        if not old_password and not request.user.is_authenticated:
+             return Response({'message': 'Old password required for unauthenticated request'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Set new password
+        user.set_password(new_password)
+        user.is_password_reset_required = False
+        
+        # Set MPIN if provided
+        mpin = serializer.validated_data.get('mpin')
+        if mpin:
+             user.mpin = make_password(mpin)
+             user.save(update_fields=['password', 'is_password_reset_required', 'mpin', 'sap_last_synced_at']) # Include any others? simplified.
+        else:
+             user.save(update_fields=['password', 'is_password_reset_required'])
+        
+        log_auth_event('PASSWORD_CHANGE', user.email, request.META.get('REMOTE_ADDR', ''), True)
+        
+        return Response({
+            'message': 'Password changed successfully. Please login with new password.',
+             'mpin_set': bool(mpin)
+        })
+        
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -169,6 +373,7 @@ def logout_view(request):
         return Response({'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def current_user_view(request):
@@ -177,24 +382,181 @@ def current_user_view(request):
     return Response(serializer.data)
 
 
+# ==========================================
+# Forgot Password Flow
+# ==========================================
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+def request_password_reset(request):
+    """
+    Step 1: User provides Email/Phone -> Send OTP.
+    """
+    serializer = PasswordResetRequestSerializer(data=request.data)
+    if serializer.is_valid():
+        username = serializer.validated_data['username']
+        
+        # Resolve User
+        user = None
+        if '@' in username:
+            user = User.objects.filter(email=username).first()
+        else:
+            user = User.objects.filter(phone=username).first()
+            
+        if not user:
+            # We return 200 even if user not found to prevent enumeration, 
+            # OR return 404 if client UX needs it. User asked for "error msg user not found".
+            return Response({'message': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Generate OTP
+        otp = f"{random.randint(100000, 999999)}"
+        
+        # Create Session
+        expiry = timezone.now() + timezone.timedelta(minutes=10)
+        
+        # Invalidate previous active sessions? Optionally.
+        
+        PasswordResetSession.objects.create(
+            user=user,
+            otp_code=otp,
+            expires_at=expiry
+        )
+        
+        # Send Email
+        # We need to ensure we have the email to send to.
+        if user.email:
+            try:
+                send_otp_email(user, otp)
+            except Exception as e:
+                logger.error(f"Failed to send OTP email: {e}")
+                return Response({'message': 'Failed to send OTP email'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        else:
+             return Response({'message': 'User has no email linked for OTP'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'message': 'OTP sent to registered email'})
+    
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_reset_otp(request):
+    """
+    Step 2: User provides OTP -> Verify and return Reset Token.
+    """
+    serializer = PasswordResetVerifySerializer(data=request.data)
+    if serializer.is_valid():
+        username = serializer.validated_data['username']
+        otp = serializer.validated_data['otp']
+        
+        # Resolve User
+        user = None
+        if '@' in username:
+            user = User.objects.filter(email=username).first()
+        else:
+            user = User.objects.filter(phone=username).first()
+            
+        if not user:
+            return Response({'message': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Verify OTP
+        # Check for valid, unexpired, unused session matching user & otp
+        session = PasswordResetSession.objects.filter(
+            user=user,
+            otp_code=otp,
+            is_used=False,
+            expires_at__gt=timezone.now()
+        ).order_by('-created_at').first()
+        
+        if not session:
+            return Response({'message': 'Invalid or expired OTP'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Valid OTP -> Generate Token
+        reset_token = str(uuid.uuid4())
+        session.reset_token = reset_token
+        session.save()
+        
+        return Response({
+            'message': 'OTP Verified',
+            'reset_token': reset_token
+        })
+        
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def confirm_password_reset(request):
+    """
+    Step 3: User provides Reset Token + New Creds -> Reset Password & MPIN.
+    """
+    serializer = PasswordResetConfirmSerializer(data=request.data)
+    if serializer.is_valid():
+        reset_token = serializer.validated_data['reset_token']
+        new_password = serializer.validated_data['new_password']
+        mpin = serializer.validated_data['mpin']
+        
+        # Validate User & Token
+        session = PasswordResetSession.objects.filter(
+            reset_token=reset_token,
+            is_used=False,
+            expires_at__gt=timezone.now()
+        ).first()
+        
+        if not session:
+            return Response({'message': 'Invalid or expired reset token'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        user = session.user
+        
+        # Update Credentials
+        user.set_password(new_password)
+        user.mpin = make_password(mpin)
+        user.is_password_reset_required = False # Clear force reset flag if present
+        user.save()
+        
+        # Mark session used
+        session.is_used = True
+        session.save()
+        
+        # Send Success Email
+        try:
+            send_reset_success_email(user)
+        except Exception as e:
+            logger.error(f"Failed to send success email: {e}")
+            
+        return Response({'message': 'Password and MPIN reset successfully'})
+        
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
 def choose_role_view(request):
     """
-    Endpoint for user to select their active role context.
-    For now, this is stateless and just logs/validates the choice.
+    Endpoint to validate if a role exists in the system (by code or name).
+    Accessible without login (AllowAny).
     """
-    role_code = request.data.get('role')
-    if not role_code:
-        return Response({'error': 'Role code required'}, status=status.HTTP_400_BAD_REQUEST)
+    input_role = request.data.get('role')
+    if not input_role:
+        return Response({'message': 'Role is required'}, status=status.HTTP_400_BAD_REQUEST)
         
-    # Verify user has this role
-    if not request.user.user_roles.filter(role__code=role_code, active=True).exists():
-        return Response({'error': 'Invalid role for user'}, status=status.HTTP_403_FORBIDDEN)
+    input_role = str(input_role).strip().upper()
+    
+    # Check Role table for existence (Case Insensitive)
+    # We check if any role matches the code OR the name
+    role_exists = Role.objects.filter(
+        Q(code__iexact=input_role) | Q(name__iexact=input_role)
+    ).first()
 
-    # In a stateful session, we would save this. 
-    # For stateless JWT, the client just needs to know it's valid.
-    return Response({'status': 'role_selected', 'role': role_code})
+    if not role_exists:
+        return Response({'message': 'Role not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Return success details
+    return Response({
+        'message': 'Role valid',
+        'role_code': role_exists.code,
+        'role_name': role_exists.name
+    })
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -216,6 +578,16 @@ class UserViewSet(viewsets.ModelViewSet):
         return queryset
     
     def perform_create(self, serializer):
+        # We need to capture the raw password before it's hashed in serializer.save()?
+        # Actually ModelSerializer.save() calls create() which calls set_password(). 
+        # But we can access the raw password from `serializer.validated_data` or `self.request.data` BEFORE save, 
+        # or capture it if the serializer returns the user instance. 
+        # The `UserSerializer` pops 'password' from validated_data in `create`. 
+        # So we should grab it from initial_data or validated_data if still there?
+        # UserSerializer.create pops it. So we need to grab it here.
+        
+        raw_password = serializer.validated_data.get('password') or self.request.data.get('password')
+        
         user = serializer.save()
         log_user_action(
             self.request.user,
@@ -225,6 +597,18 @@ class UserViewSet(viewsets.ModelViewSet):
             f'Created user: {user.email}',
             True
         )
+        
+        # Send Welcome Email
+        if raw_password:
+             # Use a background task in production, but direct call for now as requested
+             try:
+                 # Re-fetch user or pass user object. 
+                 send_welcome_email(user, raw_password)
+             except Exception as e:
+                 logger.error(f"Failed to initiate welcome email: {e}")
+
+        # Note: SAP sync is now handled in UserRoleViewSet when roles are assigned
+        # This prevents sending incomplete data (missing station/role)
     
     def perform_update(self, serializer):
         user = serializer.save()
@@ -236,8 +620,22 @@ class UserViewSet(viewsets.ModelViewSet):
             f'Updated user: {user.email}',
             True
         )
+        
+        # Sync to SAP after user update
+        try:
+            sap_result = sap_service.sync_user_to_sap(user, operation='CREATE')
+            if sap_result['success']:
+                logger.info(f"User {user.email} updated in SAP successfully")
+                # Update sync timestamp
+                user.sap_last_synced_at = timezone.now()
+                user.save(update_fields=['sap_last_synced_at'])
+            else:
+                logger.error(f"SAP sync failed for user {user.email}: {sap_result.get('error')}")
+        except Exception as e:
+            logger.error(f"SAP sync error for user {user.email}: {str(e)}", exc_info=True)
     
     def perform_destroy(self, instance):
+        """Soft delete: Mark user as inactive and sync to SAP"""
         log_user_action(
             self.request.user,
             'DELETE',
@@ -246,7 +644,125 @@ class UserViewSet(viewsets.ModelViewSet):
             f'Deleted user: {instance.email}',
             True
         )
-        instance.delete()
+        
+        # Soft delete: Mark as inactive instead of deleting
+        instance.is_active = False
+        instance.save()
+        
+        # Sync inactive status to SAP
+        try:
+            sap_result = sap_service.sync_user_to_sap(instance, operation='CREATE')
+            if sap_result['success']:
+                logger.info(f"User {instance.email} marked inactive in SAP successfully")
+            else:
+                logger.error(f"SAP sync failed for user {instance.email}: {sap_result.get('error')}")
+        except Exception as e:
+            logger.error(f"SAP sync error for user {instance.email}: {str(e)}", exc_info=True)
+    
+    @action(detail=True, methods=['post'])
+    def sync_with_sap(self, request, pk=None):
+        """
+        Manually sync a user with SAP.
+        
+        POST /api/users/{id}/sync_with_sap/
+        """
+        user = self.get_object()
+        
+        try:
+            sap_result = sap_service.sync_user_to_sap(user, operation='CREATE')
+            
+            if sap_result['success']:
+                return Response({
+                    'message': f'User {user.email} synced to SAP successfully',
+                    'sap_response': sap_result.get('response')
+                })
+            else:
+                return Response({
+                    'message': 'SAP sync failed',
+                    'error': sap_result.get('error')
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.error(f"SAP sync error: {str(e)}", exc_info=True)
+            return Response({
+                'message': 'Unexpected error during SAP sync',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=True, methods=['get'])
+    def get_from_sap(self, request, pk=None):
+        """
+        Retrieve user data from SAP (DISP operation).
+        
+        GET /api/users/{id}/get_from_sap/
+        """
+        user = self.get_object()
+        
+        try:
+            sap_result = sap_service.get_user_from_sap(user.full_name or user.email.split('@')[0])
+            
+            if sap_result['success']:
+                return Response({
+                    'message': 'User data retrieved from SAP',
+                    'sap_data': sap_result.get('data')
+                })
+            else:
+                return Response({
+                    'message': 'Failed to retrieve from SAP',
+                    'error': sap_result.get('error')
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.error(f"SAP DISP error: {str(e)}", exc_info=True)
+            return Response({
+                'message': 'Unexpected error during SAP DISP',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def bulk_sync_sap(self, request):
+        """
+        Bulk sync all users to SAP.
+        
+        POST /api/users/bulk_sync_sap/
+        
+        Optional query params:
+        - user_ids: Comma-separated list of user IDs to sync
+        """
+        user_ids_param = request.query_params.get('user_ids', '')
+        
+        if user_ids_param:
+            user_ids = [int(uid) for uid in user_ids_param.split(',') if uid.strip().isdigit()]
+            users = User.objects.filter(id__in=user_ids)
+        else:
+            users = User.objects.all()
+        
+        results = {
+            'total': users.count(),
+            'success': 0,
+            'failed': 0,
+            'errors': []
+        }
+        
+        for user in users:
+            try:
+                sap_result = sap_service.sync_user_to_sap(user, operation='CREATE')
+                if sap_result['success']:
+                    results['success'] += 1
+                else:
+                    results['failed'] += 1
+                    results['errors'].append({
+                        'user_id': user.id,
+                        'email': user.email,
+                        'error': sap_result.get('error')
+                    })
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append({
+                    'user_id': user.id,
+                    'email': user.email,
+                    'error': str(e)
+                })
+        
+        return Response(results)
 
 
 class RoleViewSet(viewsets.ModelViewSet):
@@ -276,9 +792,32 @@ class UserRoleViewSet(viewsets.ModelViewSet):
             'CREATE',
             'UserRole',
             user_role.id,
-            f'Assigned role {user_role.role.name} to user {user_role.user.email}',
+            f'Assigned role {user_role.role.code} to user {user_role.user.email}',
             True
         )
+        
+        # Sync to SAP (ensures Station/Role info is sent)
+        try:
+            sap_service.sync_user_to_sap(user_role.user, operation='CREATE')
+        except Exception as e:
+            logger.error(f"Failed to sync user-role change to SAP: {e}")
+
+    def perform_update(self, serializer):
+        user_role = serializer.save()
+        log_user_action(
+            self.request.user,
+            'UPDATE',
+            'UserRole',
+            user_role.id,
+            f'Updated role assignment for user {user_role.user.email}',
+            True
+        )
+        
+        # Sync to SAP
+        try:
+            sap_service.sync_user_to_sap(user_role.user, operation='CREATE')
+        except Exception as e:
+            logger.error(f"Failed to sync user-role change to SAP: {e}")
 
 
 class StationViewSet(viewsets.ModelViewSet):

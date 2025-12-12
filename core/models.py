@@ -64,8 +64,21 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     phone = models.CharField(
         max_length=20,
+        unique=True,
         verbose_name='Phone Number',
         help_text='Contact phone number'
+    )
+    is_password_reset_required = models.BooleanField(
+        default=False,
+        verbose_name='Password Reset Required',
+        help_text='Designates whether the user must reset their password on next login'
+    )
+    mpin = models.CharField(
+        max_length=128,
+        null=True,
+        blank=True,
+        verbose_name='MPIN',
+        help_text='4-digit MPIN for quick login (hashed)'
     )
     role_in = models.DateTimeField(
         null=True,
@@ -99,6 +112,14 @@ class User(AbstractBaseUser, PermissionsMixin):
         blank=True,
         verbose_name='FCM Token',
         help_text='Firebase Cloud Messaging token for push notifications'
+    )
+    
+    # SAP Integration Field
+    sap_last_synced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Last SAP Sync',
+        help_text='Timestamp of the last successful sync with SAP.'
     )
     
     objects = UserManager()
@@ -215,6 +236,29 @@ class Station(models.Model):
         blank=True,
         verbose_name='Stock Updated At',
         help_text='Timestamp of the latest stock update.',
+    )
+    
+    # SAP Integration Fields
+    sap_station_id = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        unique=True,
+        verbose_name='SAP Station ID',
+        help_text='Station ID from SAP system (INPUT1). Used for synchronization.',
+    )
+    phone = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        verbose_name='Phone Number',
+        help_text='Contact phone number for the station.',
+    )
+    sap_last_synced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Last SAP Sync',
+        help_text='Timestamp of the last successful sync with SAP.',
     )
 
     class Meta:
@@ -356,3 +400,24 @@ class Route(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.code})"
+
+
+class PasswordResetSession(models.Model):
+    """
+    Manages the 3-step Password Reset flow:
+    1. Request (OTP created)
+    2. Verify (Reset token created if OTP valid)
+    3. Confirm (Used token to reset password)
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reset_sessions')
+    otp_code = models.CharField(max_length=6, verbose_name="OTP Code")
+    reset_token = models.CharField(max_length=64, null=True, blank=True, unique=True, verbose_name="Secure Reset Token")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    
+    class Meta:
+        db_table = 'password_reset_sessions'
+        
+    def __str__(self):
+        return f"Reset Session ({self.user.email}) - Used: {self.is_used}"

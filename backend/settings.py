@@ -14,6 +14,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import dj_database_url
+import sentry_sdk
 
 # Load environment variables from .env file
 load_dotenv()
@@ -53,6 +54,15 @@ INSTALLED_APPS = [
     'core',
     'logistics',
 ]
+
+sentry_sdk.init(
+    dsn="https://927f155a1a886ab7f328b399def05d58@o4510516494401536.ingest.us.sentry.io/4510516497219584",
+    # Add data like request headers and IP for users,
+    # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
+    send_default_pii=True,
+    traces_sample_rate=1.0,
+    enable_logs=True,
+)
 
 ASGI_APPLICATION = 'backend.asgi.application'
 CHANNEL_LAYERS = {
@@ -295,6 +305,17 @@ LOGGING = {
 }
 
 # ==========================================
+# Email Configuration
+# ==========================================
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Sabarmati Gas Limited <no-reply@sgl.com>')
+
+# ==========================================
 # Firebase Cloud Messaging (FCM) Settings
 # ==========================================
 # Set to False to use real FCM (requires FIREBASE_CREDENTIALS_FILE)
@@ -332,4 +353,30 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 60.0,  # Run every 60 seconds
     },
 }
+
+# ==========================================
+# SAP Integration Configuration
+# ==========================================
+# Enable/disable SAP synchronization
+SAP_ENABLED = os.getenv('SAP_ENABLED', 'False') == 'True'
+
+# SAP REST Adapter base URL
+SAP_BASE_URL = os.getenv('SAP_BASE_URL', 'http://10.1.70.249:50000/RESTAdapter/')
+
+# SAP endpoint for user operations
+SAP_USER_ENDPOINT = os.getenv('SAP_USER_ENDPOINT', 'GTS1/')
+
+# SAP endpoint for station operations
+SAP_STATION_ENDPOINT = os.getenv('SAP_STATION_ENDPOINT', 'GTS3/')
+SAP_TRIP_ENDPOINT = os.getenv('SAP_TRIP_ENDPOINT', 'GTS11/')
+
+# Request timeout in seconds
+SAP_TIMEOUT = int(os.getenv('SAP_TIMEOUT', '30'))
+
+# Number of retry attempts for failed requests
+SAP_RETRY_COUNT = int(os.getenv('SAP_RETRY_COUNT', '3'))
+
+# SAP Authentication credentials
+SAP_USERNAME = os.getenv('SAP_USERNAME', '')
+SAP_PASSWORD = os.getenv('SAP_PASSWORD', '')
 
