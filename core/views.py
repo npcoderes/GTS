@@ -219,7 +219,7 @@ def login_view(request):
                         'message': 'User role does not match'
                     }, status=status.HTTP_401_UNAUTHORIZED)
             
-            if not role_code:
+            if not role_code:   
                 return Response({
                     'message': 'User role or station not found'
                 }, status=status.HTTP_401_UNAUTHORIZED)

@@ -74,13 +74,13 @@ class ReconciliationListView(views.APIView):
                     "msFilled": ms_qty,
                     "dbsDelivered": dbs_qty,
                     "difference": round(variance, 2),
-                    "unit": "kg"
+                    # "unit": "kg"
                 },
                 "variance": {
                     "percentage": round(variance_pct, 2),
                     "isAboveThreshold": variance_pct > 0.5, # Assuming 0.5% threshold
                     "severity": "HIGH" if variance_pct > 1.0 else ("MEDIUM" if variance_pct > 0.5 else "LOW"),
-                    "financialImpact": round(variance_abs * 50, 2) # Example calc
+                    # "financialImpact": round(variance_abs * 50, 2) # Example calc
                 },
                 "driver": {
                     "id": str(trip.driver.id) if trip.driver else None,
@@ -92,7 +92,7 @@ class ReconciliationListView(views.APIView):
                     "decantedAt": timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
                     "transitTimeMinutes": int((trip.completed_at - trip.started_at).total_seconds() / 60) if (trip.completed_at and trip.started_at) else 0
                 },
-                "status": rec.status # PENDING, APPROVED, FLAGGED, etc.
+                # "status": rec.status # PENDING, APPROVED, FLAGGED, etc.
             })
         
         return Response({"reports": reports})

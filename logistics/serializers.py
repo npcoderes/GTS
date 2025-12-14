@@ -80,7 +80,11 @@ class DriverSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Email, Phone, and Password are required for new driver.")
             
         from core.models import User, Role, UserRole
+        from core.utils import send_welcome_email
         from django.db import transaction
+        import logging
+        
+        logger = logging.getLogger(__name__)
         
         with transaction.atomic():
             if User.objects.filter(email=email).exists():
@@ -94,12 +98,21 @@ class DriverSerializer(serializers.ModelSerializer):
                 full_name=validated_data.get('full_name', ''),
                 phone=phone
             )
+            # Force password reset on first login
+            user.is_password_reset_required = True
+            user.save(update_fields=['is_password_reset_required'])
             
             role, _ = Role.objects.get_or_create(code='DRIVER', defaults={'name': 'Driver'})
             UserRole.objects.create(user=user, role=role)
             
             validated_data['user'] = user
             driver = super().create(validated_data)
+            
+            # Send welcome email with credentials
+            try:
+                send_welcome_email(user, password)
+            except Exception as e:
+                logger.error(f"Failed to send welcome email to driver: {e}")
                     
         return driver
 
