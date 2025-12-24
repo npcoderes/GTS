@@ -17,6 +17,8 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from django.http import HttpResponse
+from django.conf import settings
+from django.conf.urls.static import static
 
 def trigger_error(request):
     division_by_zero = 1 / 0
@@ -29,3 +31,6 @@ urlpatterns = [
     path('api/', include('logistics.urls')),
     path("", lambda request: HttpResponse("Backend is running"))
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

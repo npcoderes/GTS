@@ -46,7 +46,7 @@ class DBSDashboardView(views.APIView):
         ]
         trips = Trip.objects.filter(dbs=dbs, status__in=relevant_statuses).select_related(
             'ms', 'dbs', 'vehicle'
-        ).prefetch_related('ms_fillings', 'dbs_decantings')
+        ).prefetch_related('ms_fillings', 'dbs_decantings').order_by('-started_at')
         
         # Calculate Summary Stats
         summary = {
@@ -91,7 +91,7 @@ class DBSDashboardView(views.APIView):
             trip_data = {
                 "id": f"{trip.id}", # Format ID
                 "status": 'AT_DBS' if trip.status == 'DECANTING_CONFIRMED' else trip.status,
-                "route": f"{trip.ms.name} → {trip.dbs.name}",
+                "route": f"from {trip.ms.name} to {trip.dbs.name}",
                 "msName": trip.ms.name,
                 "dbsName": trip.dbs.name,
                 "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else None, # Using started_at as proxy for scheduled
@@ -259,16 +259,37 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
     def decant_start(self, request):
         """
         Start Decanting (Pre-Decant)
-        Payload: { "tripToken": "...", "pressure": "...", "mfm": "..." }
+        Payload: { "tripToken": "...", "pressure": "...", "mfm": "...", "photoBase64": "base64..." }
         """
         token_val = request.data.get('tripToken')
         pressure = request.data.get('pressure')
         mfm = request.data.get('mfm')
+        photo_base64 = request.data.get('photoBase64')
 
         if not token_val:
             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
+        
+        # Handle photo upload
+        photo_file = None
+        if photo_base64:
+            try:
+                import base64
+                from django.core.files.base import ContentFile
+                import uuid
+                
+                if ';base64,' in photo_base64:
+                    format, imgstr = photo_base64.split(';base64,')
+                    ext = format.split('/')[-1] if '/' in format else 'jpg'
+                else:
+                    imgstr = photo_base64
+                    ext = 'jpg'
+                
+                file_name = f"dbs_pre_decant_{trip.id}_{uuid.uuid4().hex[:6]}.{ext}"
+                photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
+            except Exception as e:
+                print(f"Error decoding pre_decant photo: {e}")
         
         # Get or create Decanting record
         from .models import DBSDecanting
@@ -278,18 +299,15 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         if pressure:
             decanting.pre_dec_pressure_bar = pressure
         if mfm:
-            decanting.pre_dec_reading = mfm # Using pre_dec_reading for MFM as generic, or should we use a new field?
-            # User asked for 'prefill_mfm' (MS) vs 'pre_dec_pressure'.
-            # Checking models: DBSDecanting has `pre_dec_pressure_bar` and `pre_dec_reading`.
-            # We will use pre_dec_reading for MFM values if not specified otherwise, or add a field if needed.
-            # For now mapping 'mfm' to 'pre_dec_reading'.
-            pass
+            decanting.pre_dec_reading = mfm
+        if photo_file:
+            decanting.pre_decant_photo_operator = photo_file
 
         decanting.save()
 
         # Update trip step tracking
-        trip.current_step = 5  # Step 5: DBS Decanting in progress
-        trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True}
+        if trip.update_step(5):
+            trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True}
         trip.save()
         
         # Send WebSocket update to Driver
@@ -325,16 +343,37 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
     def decant_end(self, request):
         """
         End Decanting (Post-Decant)
-        Payload: { "tripToken": "...", "pressure": "...", "mfm": "..." }
+        Payload: { "tripToken": "...", "pressure": "...", "mfm": "...", "photoBase64": "base64..." }
         """
         token_val = request.data.get('tripToken')
         pressure = request.data.get('pressure')
         mfm = request.data.get('mfm')
+        photo_base64 = request.data.get('photoBase64')
 
         if not token_val:
             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
+        
+        # Handle photo upload
+        photo_file = None
+        if photo_base64:
+            try:
+                import base64
+                from django.core.files.base import ContentFile
+                import uuid
+                
+                if ';base64,' in photo_base64:
+                    format, imgstr = photo_base64.split(';base64,')
+                    ext = format.split('/')[-1] if '/' in format else 'jpg'
+                else:
+                    imgstr = photo_base64
+                    ext = 'jpg'
+                
+                file_name = f"dbs_post_decant_{trip.id}_{uuid.uuid4().hex[:6]}.{ext}"
+                photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
+            except Exception as e:
+                print(f"Error decoding post_decant photo: {e}")
         
         from .models import DBSDecanting
         decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
@@ -344,11 +383,21 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             decanting.post_dec_pressure_bar = pressure
         if mfm:
             decanting.post_dec_reading = mfm
+        if photo_file:
+            decanting.post_decant_photo_operator = photo_file
 
+        delivered_qty = None
+        if decanting.pre_dec_reading and decanting.post_dec_reading:
+            try:
+                delivered_qty = float(decanting.post_dec_reading) - float(decanting.pre_dec_reading)
+                decanting.delivered_qty_kg = delivered_qty
+            except ValueError:
+                pass  # Invalid readings, cannot calculate
         decanting.save()
 
-        # Update trip step tracking
-        trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True}
+        # Update trip step tracking - stay at step 5 until both parties confirm
+        if trip.current_step >= 5:
+            trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True}
         trip.save()
         
         # Send WebSocket update to Driver
@@ -387,39 +436,36 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         Payload: { "tripToken": "...", "deliveredQty": "..." }
         """
         token_val = request.data.get('tripToken')
-        delivered_qty = request.data.get('deliveredQty')
         
-        if not token_val or delivered_qty is None:
-             return Response({'error': 'tripToken and deliveredQty are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not token_val:
+             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
         from .models import DBSDecanting
         decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
         
-        decanting.delivered_qty_kg = delivered_qty
+        # Validate: post_dec_reading - pre_dec_reading should match delivered_qty_kg
+        if decanting.pre_dec_reading and decanting.post_dec_reading and decanting.delivered_qty_kg:
+            calculated_qty = float(decanting.post_dec_reading) - float(decanting.pre_dec_reading)
+            if abs(calculated_qty - float(decanting.delivered_qty_kg)) > 0.01:
+                return Response({
+                    'error': 'Quantity mismatch',
+                    'message': f'Calculated quantity ({calculated_qty} kg) does not match delivered quantity ({decanting.delivered_qty_kg} kg)'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
         decanting.confirmed_by_dbs_operator = request.user
         decanting.save()
 
-        # Determine strict status. User said "driver will go back to MS then this trip will complete".
-        # So we mark it as 'DBS_COMPLETED' or 'RETURN_TO_MS'.
-        # However, for now, to ensure flow continues, let's use 'COMPLETED' for the *Task* of decanting,
-        # and maybe 'RETURN_TO_MS' for the trip status?
-        # Existing flow uses 'COMPLETED'. Let's stick to 'DECANTING_CONFIRMED' to be safe or 'COMPLETED' if that closes the stock request.
-        # Check StockRequest update requirement from previous context ("update StockRequest status to COMPLETED").
-
-        if trip.stock_request:
-            trip.stock_request.status = 'COMPLETED'
-            trip.stock_request.save()
-
-        trip.status = 'DECANTING_CONFIRMED'
-        trip.current_step = 6  # Step 6: Navigate back to MS
-        trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
+        # Mark operator confirmed in step_data  
+        # Stay at step 5 until driver also confirms
+        if trip.current_step >= 5:
+            trip.step_data = {**trip.step_data, 'dbs_operator_confirmed': True}
         trip.save()
         
         return Response({
             "success": True,
-            "message": "Decanting confirmed. Stock Request completed."
+            "message": "Decanting confirmed by operator. Waiting for driver confirmation."
         })
 
     def list(self, request):

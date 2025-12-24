@@ -99,8 +99,8 @@ def get_user_permissions(role_code, user=None):
             db_permissions = get_user_permissions_from_db(user)
             if db_permissions:
                 return db_permissions
-        except Exception:
-            pass  # Fall back to hardcoded permissions
+        except Exception as e:
+            logger.warning(f"Failed to get permissions from database for user {user.id}: {e}")
     
     # Fallback to hardcoded role-based permissions
     permissions = default_permissions.copy()
@@ -600,12 +600,10 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # Send Welcome Email
         if raw_password:
-             # Use a background task in production, but direct call for now as requested
              try:
-                 # Re-fetch user or pass user object. 
                  send_welcome_email(user, raw_password)
              except Exception as e:
-                 logger.error(f"Failed to initiate welcome email: {e}")
+                 logger.error(f"Failed to send welcome email to {user.email}: {e}", exc_info=True)
 
         # Note: SAP sync is now handled in UserRoleViewSet when roles are assigned
         # This prevents sending incomplete data (missing station/role)
@@ -747,6 +745,9 @@ class UserViewSet(viewsets.ModelViewSet):
                 sap_result = sap_service.sync_user_to_sap(user, operation='CREATE')
                 if sap_result['success']:
                     results['success'] += 1
+                    # Update sync timestamp
+                    user.sap_last_synced_at = timezone.now()
+                    user.save(update_fields=['sap_last_synced_at'])
                 else:
                     results['failed'] += 1
                     results['errors'].append({
@@ -763,6 +764,76 @@ class UserViewSet(viewsets.ModelViewSet):
                 })
         
         return Response(results)
+    
+    @action(detail=False, methods=['post'])
+    def sync_all_with_sap(self, request):
+        """
+        Bidirectional sync: Compare local users with SAP and synchronize.
+        - Push new/updated local users to SAP
+        - Mark deleted users as inactive
+        
+        POST /api/users/sync_all_with_sap/
+        
+        Response:
+        {
+            'message': 'Sync completed',
+            'pushed_to_sap': 5,
+            'marked_inactive': 2,
+            'errors': [...]
+        }
+        """
+        results = {
+            'message': 'User sync with SAP completed',
+            'pushed_to_sap': 0,
+            'marked_inactive': 0,
+            'errors': [],
+            'details': []
+        }
+        
+        try:
+            # Get all active local users
+            local_users = User.objects.filter(is_active=True)
+            
+            # Push all active users to SAP
+            for user in local_users:
+                try:
+                    sap_result = sap_service.sync_user_to_sap(user, operation='CREATE')
+                    if sap_result['success']:
+                        results['pushed_to_sap'] += 1
+                        user.sap_last_synced_at = timezone.now()
+                        user.save(update_fields=['sap_last_synced_at'])
+                        results['details'].append({
+                            'user_id': user.id,
+                            'email': user.email,
+                            'action': 'synced_to_sap',
+                            'status': 'success'
+                        })
+                    else:
+                        results['errors'].append({
+                            'user_id': user.id,
+                            'email': user.email,
+                            'action': 'sync_to_sap',
+                            'error': sap_result.get('error')
+                        })
+                except Exception as e:
+                    results['errors'].append({
+                        'user_id': user.id,
+                        'email': user.email,
+                        'action': 'sync_to_sap',
+                        'error': str(e)
+                    })
+            
+            # Note: SAP doesn't provide a list endpoint, so we can't pull deleted users
+            # Inactive users are already marked in local DB
+            
+            return Response(results)
+            
+        except Exception as e:
+            logger.error(f"Error during user SAP sync: {str(e)}", exc_info=True)
+            return Response({
+                'message': 'Sync failed',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class RoleViewSet(viewsets.ModelViewSet):
@@ -800,7 +871,7 @@ class UserRoleViewSet(viewsets.ModelViewSet):
         try:
             sap_service.sync_user_to_sap(user_role.user, operation='CREATE')
         except Exception as e:
-            logger.error(f"Failed to sync user-role change to SAP: {e}")
+            logger.error(f"Failed to sync user-role change to SAP for user {user_role.user.email}: {e}", exc_info=True)
 
     def perform_update(self, serializer):
         user_role = serializer.save()
@@ -817,7 +888,7 @@ class UserRoleViewSet(viewsets.ModelViewSet):
         try:
             sap_service.sync_user_to_sap(user_role.user, operation='CREATE')
         except Exception as e:
-            logger.error(f"Failed to sync user-role change to SAP: {e}")
+            logger.error(f"Failed to sync user-role update to SAP for user {user_role.user.email}: {e}", exc_info=True)
 
 
 class StationViewSet(viewsets.ModelViewSet):
@@ -825,6 +896,412 @@ class StationViewSet(viewsets.ModelViewSet):
     queryset = Station.objects.all().order_by('name')
     serializer_class = StationSerializer
     permission_classes = [IsAuthenticated]
+    
+    def perform_create(self, serializer):
+        """Create station and sync to SAP"""
+        station = serializer.save()
+        log_user_action(
+            self.request.user,
+            'CREATE',
+            'Station',
+            station.id,
+            f'Created station: {station.code}',
+            True
+        )
+        
+        # Sync to SAP
+        try:
+            sap_result = sap_service.sync_station_to_sap(station, operation='CREATE')
+            if sap_result['success']:
+                logger.info(f"Station {station.code} synced to SAP successfully")
+                station.sap_last_synced_at = timezone.now()
+                station.save(update_fields=['sap_last_synced_at'])
+            else:
+                logger.error(f"SAP sync failed for station {station.code}: {sap_result.get('error')}")
+        except Exception as e:
+            logger.error(f"SAP sync error for station {station.code}: {str(e)}", exc_info=True)
+    
+    def perform_update(self, serializer):
+        """Update station and sync to SAP"""
+        station = serializer.save()
+        log_user_action(
+            self.request.user,
+            'UPDATE',
+            'Station',
+            station.id,
+            f'Updated station: {station.code}',
+            True
+        )
+        
+        # Sync to SAP
+        try:
+            sap_result = sap_service.sync_station_to_sap(station, operation='CREATE')
+            if sap_result['success']:
+                logger.info(f"Station {station.code} updated in SAP successfully")
+                station.sap_last_synced_at = timezone.now()
+                station.save(update_fields=['sap_last_synced_at'])
+            else:
+                logger.error(f"SAP sync failed for station {station.code}: {sap_result.get('error')}")
+        except Exception as e:
+            logger.error(f"SAP sync error for station {station.code}: {str(e)}", exc_info=True)
+    
+    @action(detail=False, methods=['post'])
+    def import_from_sap(self, request):
+        """
+        Import stations from SAP and create/update in local database.
+        
+        POST /api/stations/import_from_sap/
+        
+        Optional query params:
+        - station_type: 'MS' or 'DBS' (default: import both)
+        - station_id: Specific station ID to import
+        
+        Response:
+        {
+            'message': 'Import completed',
+            'created': 5,
+            'updated': 3,
+            'skipped': 1,
+            'errors': [...]
+        }
+        """
+        station_type = request.query_params.get('station_type', None)
+        station_id = request.query_params.get('station_id', None)
+        
+        # Map frontend type to SAP type
+        sap_type = None
+        if station_type:
+            if station_type.upper() == 'DBS':
+                sap_type = 'DB'  # SAP uses 'DB' instead of 'DBS'
+            elif station_type.upper() == 'MS':
+                sap_type = 'MS'
+        
+        results = {
+            'message': 'Station import from SAP completed',
+            'created': 0,
+            'updated': 0,
+            'skipped': 0,
+            'errors': [],
+            'details': []
+        }
+        
+        try:
+            # Get stations from SAP
+            sap_result = sap_service.get_stations_from_sap(
+                station_id=station_id,
+                station_type=sap_type
+            )
+            
+            if not sap_result['success']:
+                return Response({
+                    'message': 'Failed to retrieve stations from SAP',
+                    'error': sap_result.get('error')
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            sap_stations = sap_result.get('stations', [])
+            
+            if not sap_stations:
+                return Response({
+                    'message': 'No stations found in SAP',
+                    'created': 0,
+                    'updated': 0,
+                    'skipped': 0
+                })
+            
+            # Process each station
+            for sap_station in sap_stations:
+                try:
+                    station_code = sap_station.get('code')
+                    station_name = sap_station.get('name')
+                    station_sap_type = sap_station.get('type', '')
+                    
+                    if not station_code or not station_name:
+                        results['skipped'] += 1
+                        results['errors'].append({
+                            'station': sap_station.get('id'),
+                            'error': 'Missing code or name'
+                        })
+                        continue
+                    
+                    # Map SAP type to local type
+                    local_type = 'DBS' if station_sap_type == 'DB' else 'MS'
+                    
+                    # Check if station exists
+                    existing_station = Station.objects.filter(
+                        Q(sap_station_id=station_code) | Q(code=station_code)
+                    ).first()
+                    
+                    station_data = {
+                        'name': station_name,
+                        'type': local_type,
+                        'city': sap_station.get('city', ''),
+                        'phone': sap_station.get('phone', ''),
+                        'sap_station_id': station_code,
+                        'sap_last_synced_at': timezone.now()
+                    }
+                    
+                    if existing_station:
+                        # Update existing station
+                        for key, value in station_data.items():
+                            setattr(existing_station, key, value)
+                        existing_station.save()
+                        
+                        results['updated'] += 1
+                        results['details'].append({
+                            'station_id': existing_station.id,
+                            'code': station_code,
+                            'name': station_name,
+                            'action': 'updated'
+                        })
+                        
+                        log_user_action(
+                            request.user,
+                            'UPDATE',
+                            'Station',
+                            existing_station.id,
+                            f'Updated station from SAP: {station_code}',
+                            True
+                        )
+                    else:
+                        # Create new station
+                        station_data['code'] = station_code
+                        new_station = Station.objects.create(**station_data)
+                        
+                        results['created'] += 1
+                        results['details'].append({
+                            'station_id': new_station.id,
+                            'code': station_code,
+                            'name': station_name,
+                            'action': 'created'
+                        })
+                        
+                        log_user_action(
+                            request.user,
+                            'CREATE',
+                            'Station',
+                            new_station.id,
+                            f'Imported station from SAP: {station_code}',
+                            True
+                        )
+                    
+                except Exception as e:
+                    results['errors'].append({
+                        'station': sap_station.get('code'),
+                        'error': str(e)
+                    })
+                    logger.error(f"Error importing station {sap_station.get('code')}: {str(e)}", exc_info=True)
+            
+            return Response(results)
+            
+        except Exception as e:
+            logger.error(f"Error during station import: {str(e)}", exc_info=True)
+            return Response({
+                'message': 'Import failed',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def sync_to_sap(self, request):
+        """
+        Push all local stations to SAP.
+        
+        POST /api/stations/sync_to_sap/
+        
+        Optional query params:
+        - station_ids: Comma-separated list of station IDs to sync
+        
+        Response:
+        {
+            'message': 'Sync completed',
+            'success': 10,
+            'failed': 2,
+            'errors': [...]
+        }
+        """
+        station_ids_param = request.query_params.get('station_ids', '')
+        
+        if station_ids_param:
+            station_ids = [int(sid) for sid in station_ids_param.split(',') if sid.strip().isdigit()]
+            stations = Station.objects.filter(id__in=station_ids)
+        else:
+            stations = Station.objects.all()
+        
+        results = {
+            'message': 'Station sync to SAP completed',
+            'total': stations.count(),
+            'success': 0,
+            'failed': 0,
+            'errors': [],
+            'details': []
+        }
+        
+        for station in stations:
+            try:
+                sap_result = sap_service.sync_station_to_sap(station, operation='CREATE')
+                if sap_result['success']:
+                    results['success'] += 1
+                    station.sap_last_synced_at = timezone.now()
+                    station.save(update_fields=['sap_last_synced_at'])
+                    results['details'].append({
+                        'station_id': station.id,
+                        'code': station.code,
+                        'status': 'success'
+                    })
+                else:
+                    results['failed'] += 1
+                    results['errors'].append({
+                        'station_id': station.id,
+                        'code': station.code,
+                        'error': sap_result.get('error')
+                    })
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append({
+                    'station_id': station.id,
+                    'code': station.code,
+                    'error': str(e)
+                })
+        
+        return Response(results)
+    
+    @action(detail=False, methods=['post'])
+    def sync_all_with_sap(self, request):
+        """
+        Bidirectional sync: Import from SAP and push local changes.
+        - Import new/updated stations from SAP
+        - Push local stations to SAP
+        - Remove stations that exist locally but not in SAP (optional)
+        
+        POST /api/stations/sync_all_with_sap/
+        
+        Request body (optional):
+        {
+            'remove_deleted': false  // Whether to delete local stations not in SAP
+        }
+        
+        Response:
+        {
+            'message': 'Bidirectional sync completed',
+            'imported_from_sap': {'created': 5, 'updated': 3},
+            'pushed_to_sap': {'success': 10, 'failed': 1},
+            'removed_local': 2,
+            'errors': [...]
+        }
+        """
+        remove_deleted = request.data.get('remove_deleted', False)
+        
+        results = {
+            'message': 'Bidirectional station sync completed',
+            'imported_from_sap': {'created': 0, 'updated': 0, 'skipped': 0},
+            'pushed_to_sap': {'success': 0, 'failed': 0},
+            'removed_local': 0,
+            'errors': []
+        }
+        
+        try:
+            # Step 1: Import from SAP
+            logger.info("Starting SAP import...")
+            sap_result = sap_service.get_stations_from_sap()
+            
+            if not sap_result['success']:
+                results['errors'].append({
+                    'step': 'import_from_sap',
+                    'error': sap_result.get('error')
+                })
+            else:
+                sap_stations = sap_result.get('stations', [])
+                sap_station_codes = set()
+                
+                # Process SAP stations
+                for sap_station in sap_stations:
+                    try:
+                        station_code = sap_station.get('code')
+                        station_name = sap_station.get('name')
+                        station_sap_type = sap_station.get('type', '')
+                        
+                        if not station_code or not station_name:
+                            results['imported_from_sap']['skipped'] += 1
+                            continue
+                        
+                        sap_station_codes.add(station_code)
+                        local_type = 'DBS' if station_sap_type == 'DB' else 'MS'
+                        
+                        existing_station = Station.objects.filter(
+                            Q(sap_station_id=station_code) | Q(code=station_code)
+                        ).first()
+                        
+                        station_data = {
+                            'name': station_name,
+                            'type': local_type,
+                            'city': sap_station.get('city', ''),
+                            'phone': sap_station.get('phone', ''),
+                            'sap_station_id': station_code,
+                            'sap_last_synced_at': timezone.now()
+                        }
+                        
+                        if existing_station:
+                            for key, value in station_data.items():
+                                setattr(existing_station, key, value)
+                            existing_station.save()
+                            results['imported_from_sap']['updated'] += 1
+                        else:
+                            station_data['code'] = station_code
+                            Station.objects.create(**station_data)
+                            results['imported_from_sap']['created'] += 1
+                        
+                    except Exception as e:
+                        results['errors'].append({
+                            'step': 'import_station',
+                            'station': sap_station.get('code'),
+                            'error': str(e)
+                        })
+                
+                # Step 2: Remove deleted stations (if requested)
+                if remove_deleted and sap_station_codes:
+                    deleted_stations = Station.objects.exclude(
+                        Q(sap_station_id__in=sap_station_codes) | Q(code__in=sap_station_codes)
+                    ).filter(sap_station_id__isnull=False)
+                    
+                    deleted_count = deleted_stations.count()
+                    deleted_stations.delete()
+                    results['removed_local'] = deleted_count
+            
+            # Step 3: Push local stations to SAP
+            logger.info("Starting push to SAP...")
+            local_stations = Station.objects.all()
+            
+            for station in local_stations:
+                try:
+                    sap_result = sap_service.sync_station_to_sap(station, operation='CREATE')
+                    if sap_result['success']:
+                        results['pushed_to_sap']['success'] += 1
+                        station.sap_last_synced_at = timezone.now()
+                        station.save(update_fields=['sap_last_synced_at'])
+                    else:
+                        results['pushed_to_sap']['failed'] += 1
+                        results['errors'].append({
+                            'step': 'push_to_sap',
+                            'station_id': station.id,
+                            'code': station.code,
+                            'error': sap_result.get('error')
+                        })
+                except Exception as e:
+                    results['pushed_to_sap']['failed'] += 1
+                    results['errors'].append({
+                        'step': 'push_to_sap',
+                        'station_id': station.id,
+                        'code': station.code,
+                        'error': str(e)
+                    })
+            
+            return Response(results)
+            
+        except Exception as e:
+            logger.error(f"Error during bidirectional sync: {str(e)}", exc_info=True)
+            return Response({
+                'message': 'Sync failed',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class RouteViewSet(viewsets.ModelViewSet):
@@ -880,40 +1357,101 @@ class MSDBSMapViewSet(viewsets.ModelViewSet):
 def register_fcm_token(request):
     """
     Register FCM token for push notifications.
+    Supports multiple devices per user.
     Works for all user roles (Driver, DBS Operator, MS Operator, EIC, etc.)
     
     POST /api/notifications/register-token
     
     Request Body:
     {
-        "deviceToken": "firebase-token-string"
+        "deviceToken": "firebase-token-string",
+        "platform": "android" // Optional: android/ios/web
     }
     
     Response:
     {
         "message": "FCM token registered successfully",
         "user_id": 1,
-        "user_name": "John Doe"
+        "user_name": "John Doe",
+        "device_id": 123
     }
     """
-    device_token = request.data.get('deviceToken')
+    from core.notification_models import DeviceToken
     
-    if not device_token:
+    try:
+        device_token = request.data.get('deviceToken')
+        platform = request.data.get('platform', 'unknown')
+        
+        # Validate deviceToken
+        if not device_token:
+            logger.warning(f"FCM token registration failed: deviceToken is missing for user {request.user.email}")
+            return Response(
+                {'error': 'deviceToken is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate deviceToken is a non-empty string
+        if not isinstance(device_token, str) or not device_token.strip():
+            logger.warning(f"FCM token registration failed: invalid deviceToken format for user {request.user.email}")
+            return Response(
+                {'error': 'deviceToken must be a valid non-empty string'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        device_token = device_token.strip()
+        user = request.user
+        
+        # Determine device type from user's primary role
+        primary_role = get_primary_role(user)
+        device_type = 'GENERAL'
+        if primary_role:
+            role_code = primary_role.role.code
+            if role_code == 'DRIVER':
+                device_type = 'DRIVER'
+            elif role_code == 'MS_OPERATOR':
+                device_type = 'MS'
+            elif role_code == 'DBS_OPERATOR':
+                device_type = 'DBS'
+            elif role_code == 'EIC':
+                device_type = 'EIC'
+        
+        # Register or update device token
+        try:
+            token_obj, created = DeviceToken.objects.update_or_create(
+                token=device_token,
+                defaults={
+                    'user': user,
+                    'device_type': device_type,
+                    'platform': platform,
+                    'is_active': True
+                }
+            )
+        except Exception as db_error:
+            logger.error(f"Database error while registering FCM token for user {user.email}: {str(db_error)}", exc_info=True)
+            return Response(
+                {'error': 'Failed to save device token. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        if created:
+            logger.info(f"Registered new FCM token for user {user.email} on device {device_type}")
+        else:
+            logger.info(f"Updated FCM token for user {user.email} on device {device_type}")
+        
+        return Response({
+            'message': f"FCM token {'registered' if created else 'updated'} successfully",
+            'user_id': user.id,
+            'user_name': user.full_name,
+            'device_id': token_obj.id,
+            'device_type': device_type
+        })
+    
+    except Exception as e:
+        logger.error(f"Unexpected error in register_fcm_token: {str(e)}", exc_info=True)
         return Response(
-            {'error': 'deviceToken is required'},
-            status=status.HTTP_400_BAD_REQUEST
+            {'error': 'An unexpected error occurred. Please try again.'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    
-    # Update the user's FCM token
-    user = request.user
-    user.fcm_token = device_token
-    user.save(update_fields=['fcm_token'])
-    
-    return Response({
-        'message': 'FCM token registered successfully',
-        'user_id': user.id,
-        'user_name': user.full_name
-    })
 
 
 @api_view(['POST'])
@@ -921,15 +1459,36 @@ def register_fcm_token(request):
 def unregister_fcm_token(request):
     """
     Unregister FCM token (logout from notifications).
+    Deactivates the specific device token.
     
     POST /api/notifications/unregister-token
+    
+    Request Body:
+    {
+        "deviceToken": "firebase-token-string" // Optional: if not provided, deactivates all user's tokens
+    }
     """
+    from core.notification_models import DeviceToken
+    
+    device_token = request.data.get('deviceToken')
     user = request.user
-    user.fcm_token = None
-    user.save(update_fields=['fcm_token'])
+    
+    if device_token:
+        # Deactivate specific device
+        count = DeviceToken.objects.filter(
+            user=user,
+            token=device_token
+        ).update(is_active=False)
+        
+        message = f"Device token deactivated" if count > 0 else "Token not found"
+    else:
+        # Deactivate all user's devices (logout from all)
+        count = DeviceToken.objects.filter(user=user).update(is_active=False)
+        message = f"{count} device(s) deactivated"
     
     return Response({
-        'message': 'FCM token unregistered successfully'
+        'message': message,
+        'deactivated_count': count
     })
 
 

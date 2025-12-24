@@ -194,7 +194,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     dbs=stock_req.dbs,
                     status='PENDING',
                     started_at=timezone.now(),
-                    current_step=1,  # Step 1: Trip accepted
+                    current_step=1,
                     step_data={'trip_accepted': True}
                 )
                 
@@ -398,8 +398,8 @@ class DriverTripViewSet(viewsets.ViewSet):
             if trip.status == 'PENDING':
                 trip.status = 'AT_MS'
                 trip.origin_confirmed_at = timezone.now()
-                trip.current_step = 2  # Step 2: Arrived at MS
-                trip.step_data = {**trip.step_data, 'arrived_at_ms': True}
+                if trip.update_step(2):
+                    trip.step_data = {**trip.step_data, 'arrived_at_ms': True}
                 trip.save()
                 
                 # Notify MS Operator
@@ -463,8 +463,8 @@ class DriverTripViewSet(viewsets.ViewSet):
             if trip.status == 'IN_TRANSIT' or trip.status == 'DISPATCHED':
                 trip.status = 'AT_DBS'
                 trip.dbs_arrival_at = timezone.now()
-                trip.current_step = 5  # Step 5: Arrived at DBS / Decanting process
-                trip.step_data = {**trip.step_data, 'arrived_at_dbs': True}
+                if trip.update_step(5):
+                    trip.step_data = {**trip.step_data, 'arrived_at_dbs': True}
                 trip.save()
                 
                 # Send Notification to DBS Operator
@@ -669,18 +669,18 @@ class DriverTripViewSet(viewsets.ViewSet):
                 filling, _ = MSFilling.objects.get_or_create(trip=trip)
 
                 if reading_type == 'pre':
-                    filling.prefill_pressure_bar = reading_val
-                    filling.start_time = timezone.now()
+                    # filling.prefill_pressure_bar = reading_val
+                    # filling.start_time = timezone.now()
                     if photo_file:
                         filling.prefill_photo = photo_file
                     # Update step tracking
-                    trip.status = 'FILLING'  # Set status to FILLING when pre-reading is done
-                    trip.current_step = 3  # Step 3: MS Filling in progress
-                    trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
+                    trip.status = 'FILLING'
+                    if trip.update_step(3):
+                        trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
                     trip.save()
                 elif reading_type == 'post':
-                    filling.postfill_pressure_bar = reading_val
-                    filling.end_time = timezone.now()
+                    # filling.postfill_pressure_bar = reading_val
+                    # filling.end_time = timezone.now()
                     if photo_file:
                        filling.postfill_photo = photo_file
                     # Update step tracking
@@ -688,11 +688,17 @@ class DriverTripViewSet(viewsets.ViewSet):
 
                     if request.data.get('confirmed'):
                         filling.confirmed_by_driver = request.user
-                        # Also update trip status if post-fill?
-                        trip.status = 'IN_TRANSIT'
-                        trip.ms_departure_at = timezone.now()
-                        trip.current_step = 4  # Step 4: Heading to DBS
-                        trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+                        # Check if MS operator has also confirmed
+                        if filling.confirmed_by_ms_operator:
+                            # Both confirmed - proceed to next step
+                            trip.status = 'DISPATCHED'
+                            trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
+                            trip.ms_departure_at = timezone.now()
+                            if trip.update_step(4):
+                                trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+                        else:
+                            # Driver confirmed but waiting for operator
+                            trip.status = 'FILLED'
                     else:
                         # Post-reading done but not confirmed yet
                         trip.status = 'FILLED'
@@ -704,19 +710,19 @@ class DriverTripViewSet(viewsets.ViewSet):
                 decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
 
                 if reading_type == 'pre':
-                    decanting.pre_dec_reading = reading_val
-                    decanting.start_time = timezone.now()
+                    # decanting.pre_dec_reading = reading_val
+                    # decanting.start_time = timezone.now()
                     if photo_file:
                         decanting.pre_decant_photo = photo_file
 
                     trip.status = 'AT_DBS'
                     trip.dbs_arrival_at = timezone.now()
-                    trip.current_step = 5  # Step 5: DBS Decanting in progress
-                    trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'dbs_pre_photo_uploaded': bool(photo_file)}
+                    if trip.update_step(5):
+                        trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'dbs_pre_photo_uploaded': bool(photo_file)}
                     trip.save()
                 elif reading_type == 'post':
-                    decanting.post_dec_reading = reading_val
-                    decanting.end_time = timezone.now()
+                    # decanting.post_dec_reading = reading_val
+                    # decanting.end_time = timezone.now()
                     if photo_file:
                         decanting.post_decant_photo = photo_file
                     # Update step tracking
@@ -724,10 +730,16 @@ class DriverTripViewSet(viewsets.ViewSet):
 
                     if request.data.get('confirmed'):
                         decanting.confirmed_by_driver = request.user
-                        trip.status = 'DECANTING_CONFIRMED'
-                        trip.dbs_departure_at = timezone.now()
-                        trip.current_step = 6  # Step 6: Navigate back to MS
-                        trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
+                        # Check if DBS operator has also confirmed
+                        if decanting.confirmed_by_dbs_operator:
+                            # Both confirmed - proceed to next step
+                            if trip.stock_request:
+                                trip.stock_request.status = 'COMPLETED'
+                                trip.stock_request.save()
+                            trip.status = 'DECANTING_CONFIRMED'
+                            trip.dbs_departure_at = timezone.now()
+                            if trip.update_step(6):
+                                trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
                     trip.save()
                 decanting.save()
                 

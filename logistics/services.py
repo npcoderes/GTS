@@ -1,6 +1,6 @@
 from django.utils import timezone
 from django.db.models import Q, Count
-from .models import Shift, Trip
+from .models import Shift, Trip, StockRequest
 
 
 def find_active_shift(driver, check_time=None):
@@ -104,11 +104,18 @@ def get_available_drivers(ms_id):
     
     # 2. Drivers currently on active trips
     busy_driver_ids = Trip.objects.filter(
-        status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS','DECANTING_CONFIRMED']
+        status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED', 'RETURNED_TO_MS']
     ).values_list('driver_id', flat=True)
     
-    # 3. Exclude busy drivers
-    available_shifts = [s for s in active_shifts if s.driver.id not in busy_driver_ids]
+    # 2b. Drivers with pending trip offers (ASSIGNING status)
+    pending_assignment_driver_ids = StockRequest.objects.filter(
+        status='ASSIGNING',
+        target_driver__isnull=False
+    ).values_list('target_driver_id', flat=True)
+    
+    # 3. Exclude busy drivers and those with pending offers
+    all_busy_ids = set(busy_driver_ids) | set(pending_assignment_driver_ids)
+    available_shifts = [s for s in active_shifts if s.driver.id not in all_busy_ids]
     
     # 4. Annotate with trip count for today
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)

@@ -27,12 +27,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-mypszu$nkz8mc9*n$knl$s(6xy)pas7_#7=(^wkt483e#t_00z')
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    raise ValueError('SECRET_KEY environment variable is required')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
 
 # Application definition
@@ -55,14 +57,15 @@ INSTALLED_APPS = [
     'logistics',
 ]
 
-sentry_sdk.init(
-    dsn="https://927f155a1a886ab7f328b399def05d58@o4510516494401536.ingest.us.sentry.io/4510516497219584",
-    # Add data like request headers and IP for users,
-    # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
-    send_default_pii=True,
-    traces_sample_rate=1.0,
-    enable_logs=True,
-)
+# Sentry Configuration (only if DSN is provided)
+SENTRY_DSN = os.getenv('SENTRY_DSN')
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        send_default_pii=True,
+        traces_sample_rate=1.0,
+        enable_logs=True,
+    )
 
 ASGI_APPLICATION = 'backend.asgi.application'
 CHANNEL_LAYERS = {
@@ -110,16 +113,19 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    # 'default': {
-    #     'ENGINE': 'django.db.backends.postgresql',
-    #     'NAME': os.getenv('POSTGRES_DB', 'gts'),
-    #     'USER': os.getenv('POSTGRES_USER', 'postgres'),
-    #     'PASSWORD': os.getenv('POSTGRES_PASSWORD', '1234'),
-    #     'HOST': os.getenv('POSTGRES_HOST', 'localhost'),
-    #     'PORT': os.getenv('POSTGRES_PORT', '5432'),
-    # }
-    'default': dj_database_url.config(default=os.getenv('DATABASE_URL'), conn_max_age=600, ssl_require=True)
-}   
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('POSTGRES_DB'),
+        'USER': os.getenv('POSTGRES_USER'),
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD'),
+        'HOST': os.getenv('POSTGRES_HOST', 'localhost'),
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
+    }
+}
+
+# # Validate required database settings
+# if not all([os.getenv('POSTGRES_DB'), os.getenv('POSTGRES_USER'), os.getenv('POSTGRES_PASSWORD')]):
+#     raise ValueError('Database credentials (POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD) are required')   
 
    
 # Password validation
@@ -160,8 +166,13 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# Media files (User uploaded content)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
+# CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if os.getenv('CORS_ALLOWED_ORIGINS') else []
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_METHODS = [
@@ -190,7 +201,7 @@ REST_FRAMEWORK = {
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S%z", 
     "USE_LOCAL_TIME": True,
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        'core.authentication.ExpiringTokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -206,6 +217,7 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
         'rest_framework.parsers.MultiPartParser',
     ],
+    'EXCEPTION_HANDLER': 'core.exception_handlers.custom_exception_handler',
 }
 
 # Default primary key field type
@@ -215,6 +227,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Custom User Model
 AUTH_USER_MODEL = 'core.User'
+
+# Token expiration (in hours)
+TOKEN_EXPIRY_HOURS = int(os.getenv('TOKEN_EXPIRY_HOURS', '4380'))  # Default: 24 hours
 
 # Logging Configuration - Simplified to 3 files
 LOGS_DIR = BASE_DIR / 'logs'
@@ -322,7 +337,7 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Sabarmati Gas Limited <no-
 FCM_MOCK_MODE = False  # Set to True for development without Firebase
 
 # Path to Firebase service account JSON
-FIREBASE_CREDENTIALS_FILE = os.path.join(BASE_DIR, 'gts-app-ce5ca-firebase-adminsdk-fbsvc-560c4032e5.json')
+FIREBASE_CREDENTIALS_FILE = os.getenv('FIREBASE_CREDENTIALS_FILE', os.path.join(BASE_DIR, 'firebase-credentials.json'))
 
 
 # ==========================================

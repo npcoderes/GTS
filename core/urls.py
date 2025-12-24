@@ -5,6 +5,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from core import views
 from core.sap_views import SAPStationView
+from core.sap_sync_views import SAPStationSyncView, SAPUserSyncView
 from core.permission_views import (
     user_permissions_view, PermissionViewSet, RolePermissionViewSet, 
     UserPermissionViewSet, RoleListWithPermissionsView
@@ -29,7 +30,7 @@ urlpatterns = [
     path('auth/login/', views.login_view, name='login'),
     path('auth/logout/', views.logout_view, name='logout'),
     path('auth/me/', views.current_user_view, name='current-user'),
-    path('auth/choose-role/', views.choose_role_view, name='choose-role'),
+    path('auth/choose-role', views.choose_role_view, name='choose-role'),
     path('auth/permissions/', user_permissions_view, name='user-permissions'),
     path('auth/change-password/', views.change_password, name='change-password'),
     path('auth/mpin/set/', views.set_mpin, name='set-mpin'),
@@ -50,6 +51,8 @@ urlpatterns = [
     
     # SAP Integration
     path('sap/stations/', SAPStationView.as_view(), name='sap-stations'),
+    path('sap/sync-stations/', SAPStationSyncView.as_view(), name='sap-sync-stations'),
+    path('sap/sync-users/', SAPUserSyncView.as_view(), name='sap-sync-users'),
     
     path('', include(router.urls)),
 ]

@@ -2,7 +2,7 @@
 anyio==4.12.0
 asgiref==3.11.0
 attrs==25.4.0
-autobahn==25.11.1
+autobahn
 Automat==25.4.16
 billiard==4.2.4
 CacheControl==0.14.4
@@ -71,7 +71,7 @@ service-identity==24.2.0
 six==1.17.0
 sqlparse==0.5.3
 Twisted==25.5.0
-txaio==25.12.1
+txaio
 typing_extensions==4.15.0
 tzdata==2025.2
 tzlocal==5.3.1
@@ -81,3 +81,6 @@ vine==5.1.0
 wcwidth==0.2.14
 whitenoise==6.6.0
 zope.interface==8.1.1
+pytesseract==0.3.13
+numpy
+opencv-python-headless

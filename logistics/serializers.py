@@ -112,7 +112,7 @@ class DriverSerializer(serializers.ModelSerializer):
             try:
                 send_welcome_email(user, password)
             except Exception as e:
-                logger.error(f"Failed to send welcome email to driver: {e}")
+                logger.error(f"Failed to send welcome email to driver {user.email}: {e}", exc_info=True)
                     
         return driver
 
@@ -150,11 +150,12 @@ class EICStockRequestListSerializer(serializers.ModelSerializer):
     dbsId = serializers.SerializerMethodField()
     quantity = serializers.DecimalField(source='requested_qty_kg', max_digits=10, decimal_places=2, allow_null=True, required=False)
     requestedAt = serializers.DateTimeField(source='created_at')
+    requiredBy = serializers.SerializerMethodField()
     availableDrivers = serializers.SerializerMethodField()
     
     class Meta:
         model = StockRequest
-        fields = ['id', 'type', 'status', 'priority_preview', 'customer', 'dbsId', 'quantity', 'requestedAt', 'availableDrivers']
+        fields = ['id', 'type', 'status', 'priority_preview', 'customer', 'dbsId', 'quantity', 'requestedAt', 'requiredBy', 'availableDrivers']
         
     def get_id(self, obj):
         return f"{obj.id}"
@@ -164,6 +165,16 @@ class EICStockRequestListSerializer(serializers.ModelSerializer):
         
     def get_dbsId(self, obj):
         return obj.dbs.name if obj.dbs else "Unknown"
+    
+    def get_requiredBy(self, obj):
+        """Combine requested_by_date and requested_by_time into ISO format"""
+        if obj.requested_by_date and obj.requested_by_time:
+            from datetime import datetime
+            from django.utils import timezone
+            dt = datetime.combine(obj.requested_by_date, obj.requested_by_time)
+            dt = timezone.make_aware(dt)
+            return dt.isoformat()
+        return None
     
     def get_availableDrivers(self, obj):
         """Get available drivers for this stock request's MS"""
@@ -223,10 +234,18 @@ class TripSerializer(serializers.ModelSerializer):
     ms_details = StationSerializer(source='ms', read_only=True)
     dbs_details = StationSerializer(source='dbs', read_only=True)
     token_details = TokenSerializer(source='token', read_only=True)
+    reconciliations = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
         fields = '__all__'
+    
+    def get_reconciliations(self, obj):
+        """Include reconciliation data for completed trips"""
+        if obj.status == 'COMPLETED':
+            recons = obj.reconciliations.all()
+            return ReconciliationSerializer(recons, many=True).data
+        return []
 
 class TripHistorySerializer(serializers.ModelSerializer):
     """Serializer for driver trip history with specific frontend format."""
@@ -267,6 +286,8 @@ class TripHistorySerializer(serializers.ModelSerializer):
 class MSFillingSerializer(serializers.ModelSerializer):
     trip_details = TripSerializer(source='trip', read_only=True)
     confirmed_by_ms_operator_details = UserSerializer(source='confirmed_by_ms_operator', read_only=True)
+    prefill_photo_operator = serializers.ImageField(read_only=True)
+    postfill_photo_operator = serializers.ImageField(read_only=True)
 
     class Meta:
         model = MSFilling
@@ -275,13 +296,16 @@ class MSFillingSerializer(serializers.ModelSerializer):
 class DBSDecantingSerializer(serializers.ModelSerializer):
     trip_details = TripSerializer(source='trip', read_only=True)
     confirmed_by_dbs_operator_details = UserSerializer(source='confirmed_by_dbs_operator', read_only=True)
+    pre_decant_photo_operator = serializers.ImageField(read_only=True)
+    post_decant_photo_operator = serializers.ImageField(read_only=True)
 
     class Meta:
         model = DBSDecanting
         fields = '__all__'
 
 class ReconciliationSerializer(serializers.ModelSerializer):
-    trip_details = TripSerializer(source='trip', read_only=True)
+    # Remove trip_details to avoid circular reference
+    # trip_details = TripSerializer(source='trip', read_only=True)
 
     class Meta:
         model = Reconciliation

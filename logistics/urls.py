@@ -8,8 +8,8 @@ from .views import (
 from .eic_views import (
     EICStockRequestViewSet, EICDashboardView, 
     EICDriverApprovalView, EICPermissionsView,
-    EICNetworkOverviewView, EICReconciliationActionView,
-    EICVehicleTrackingView, EICIncomingStockRequestsView, EICAlertListView
+    EICNetworkOverviewView, EICReconciliationActionView, EICVehicleTrackingView, EICNetworkStationsView,EICNetworkTripsView,
+    EICIncomingStockRequestsView, EICAlertListView
 )
 from .reconciliation_views import ReconciliationListView
 from .customer_views import (
@@ -30,6 +30,8 @@ from .ms_views import (
     MSClusterView, MSStockTransferHistoryByDBSView, MSPendingArrivalsView, MSFillResumeView
 )
 from .eic_management_views import EICVehicleQueueView, EICClusterViewSet, EICStockTransferMSDBSView, EICStockTransfersByDBSView
+# from .ocr_views import OCRExtractTextView
+# from .ocr_paddleocr_views import PaddleOCRExtractTextView
 
 # Notification Views
 from core.notification_views import (
@@ -62,6 +64,8 @@ urlpatterns = [
     path('eic/driver-approvals/pending', EICDriverApprovalView.as_view(), name='eic-driver-approvals'),
     path('eic/permissions', EICPermissionsView.as_view(), name='eic-permissions'),
     path('eic/network-overview', EICNetworkOverviewView.as_view(), name='eic-network-overview'),
+    path('eic/network-stations', EICNetworkStationsView.as_view(), name='eic-network-stations'),
+    path('eic/network-trips', EICNetworkTripsView.as_view(), name='eic-network-trips'),
     # path('eic/reconciliation-reports', EICReconciliationReportView.as_view(), name='eic-reconciliation-reports'),
     path('eic/reconciliation/', ReconciliationListView.as_view(), name='reconciliation-list'),
     path('eic/reconciliation-reports/<int:report_id>/action', EICReconciliationActionView.as_view(), name='eic-reconciliation-action'),
@@ -143,5 +147,8 @@ urlpatterns = [
     path('customer/pending-trips', CustomerPendingTripsView.as_view(), name='customer-pending-trips'),
     path('customer/permissions', CustomerPermissionsView.as_view(), name='customer-permissions'),
     path('customer/trips/<int:trip_id>/accept', CustomerTripAcceptView.as_view(), name='customer-trip-accept'),
-]
 
+    # OCR
+    # path('ocr/extract-text', OCRExtractTextView.as_view(), name='ocr-extract-text'),
+    # path('ocr/extract-text-paddle', PaddleOCRExtractTextView.as_view(), name='ocr-extract-text-paddle'),
+]

@@ -1,0 +1,226 @@
+================================================================================
+GTS BACKEND - START COMMANDS REFERENCE
+================================================================================
+
+🚀 REQUIRED PROCESSES: 5
+================================================================================
+
+1. PostgreSQL (Database)
+2. Redis (Message Broker)
+3. Gunicorn (Web Server)
+4. Celery Worker (Background Tasks)
+5. Celery Beat (Scheduled Tasks)
+
+================================================================================
+💻 DEVELOPMENT MODE (Local Testing)
+================================================================================
+
+# Terminal 1: Django Development Server
+python manage.py runserver
+
+# Terminal 2: Celery Worker
+celery -A backend worker -l info
+
+# Terminal 3: Celery Beat
+celery -A backend beat -l info
+
+# Terminal 4: Redis (if not running as service)
+redis-server
+
+# PostgreSQL should be running as service
+
+================================================================================
+🏭 PRODUCTION MODE (Manual Start)
+================================================================================
+
+# 1. Start PostgreSQL
+sudo systemctl start postgresql
+sudo systemctl status postgresql
+
+# 2. Start Redis
+sudo systemctl start redis
+sudo systemctl status redis
+
+# 3. Start Gunicorn (Web Server)
+gunicorn backend.wsgi:application \
+    --bind 0.0.0.0:8000 \
+    --workers 4 \
+    --timeout 120 \
+    --access-logfile logs/access.log \
+    --error-logfile logs/error.log
+
+# 4. Start Celery Worker (Background Tasks)
+celery -A backend worker \
+    --loglevel=info \
+    --logfile=logs/celery-worker.log \
+    --concurrency=4
+
+# 5. Start Celery Beat (Scheduler)
+celery -A backend beat \
+    --loglevel=info \
+    --logfile=logs/celery-beat.log
+
+================================================================================
+🔧 PRODUCTION MODE (Systemd Services)
+================================================================================
+
+# Start all services
+sudo systemctl start gts-gunicorn
+sudo systemctl start gts-celery-worker
+sudo systemctl start gts-celery-beat
+
+# Check status
+sudo systemctl status gts-gunicorn
+sudo systemctl status gts-celery-worker
+sudo systemctl status gts-celery-beat
+
+# Enable on boot
+sudo systemctl enable gts-gunicorn
+sudo systemctl enable gts-celery-worker
+sudo systemctl enable gts-celery-beat
+
+# Restart services
+sudo systemctl restart gts-gunicorn
+sudo systemctl restart gts-celery-worker
+sudo systemctl restart gts-celery-beat
+
+# Stop services
+sudo systemctl stop gts-gunicorn
+sudo systemctl stop gts-celery-worker
+sudo systemctl stop gts-celery-beat
+
+================================================================================
+🐳 DOCKER MODE (Easiest)
+================================================================================
+
+# Start all services
+docker-compose up -d
+
+# Check status
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+
+# Stop all services
+docker-compose down
+
+# Restart specific service
+docker-compose restart web
+docker-compose restart celery-worker
+
+================================================================================
+📊 CHECK IF SERVICES ARE RUNNING
+================================================================================
+
+# PostgreSQL
+sudo systemctl status postgresql
+# OR
+psql -h localhost -U gts_user -d gts_production
+
+# Redis
+sudo systemctl status redis
+# OR
+redis-cli ping
+# Should return: PONG
+
+# Gunicorn
+sudo systemctl status gts-gunicorn
+# OR
+curl http://localhost:8000/api/
+
+# Celery Worker
+celery -A backend inspect active
+# OR
+sudo systemctl status gts-celery-worker
+
+# Celery Beat
+sudo systemctl status gts-celery-beat
+
+================================================================================
+📝 VIEW LOGS
+================================================================================
+
+# Application logs
+tail -f logs/error.log
+tail -f logs/info.log
+tail -f logs/requests.log
+
+# Gunicorn logs
+tail -f logs/access.log
+tail -f logs/error.log
+
+# Celery logs
+tail -f logs/celery-worker.log
+tail -f logs/celery-beat.log
+
+# Systemd logs
+sudo journalctl -u gts-gunicorn -f
+sudo journalctl -u gts-celery-worker -f
+sudo journalctl -u gts-celery-beat -f
+
+================================================================================
+🔄 RESTART SERVICES
+================================================================================
+
+# Restart all
+sudo systemctl restart gts-gunicorn gts-celery-worker gts-celery-beat
+
+# Restart individual
+sudo systemctl restart gts-gunicorn
+sudo systemctl restart gts-celery-worker
+sudo systemctl restart gts-celery-beat
+
+# Restart PostgreSQL
+sudo systemctl restart postgresql
+
+# Restart Redis
+sudo systemctl restart redis
+
+================================================================================
+🚨 TROUBLESHOOTING
+================================================================================
+
+# Service won't start?
+sudo journalctl -u gts-gunicorn -n 50
+sudo journalctl -u gts-celery-worker -n 50
+
+# Database connection error?
+psql -h localhost -U gts_user -d gts_production
+sudo tail -f /var/log/postgresql/postgresql-14-main.log
+
+# Redis connection error?
+redis-cli ping
+sudo tail -f /var/log/redis/redis-server.log
+
+# Celery not processing tasks?
+celery -A backend inspect active
+sudo systemctl restart gts-celery-worker
+
+# Check environment variables
+python scripts/check_env.py
+
+================================================================================
+⚡ QUICK START (Choose One)
+================================================================================
+
+OPTION 1: Development (Local)
+------------------------------
+python manage.py runserver
+# Open new terminals for celery worker and beat
+
+OPTION 2: Production (Systemd)
+-------------------------------
+sudo systemctl start gts-gunicorn gts-celery-worker gts-celery-beat
+
+OPTION 3: Docker (Easiest)
+---------------------------
+docker-compose up -d
+
+================================================================================
+📖 FULL DOCUMENTATION
+================================================================================
+
+See DEPLOYMENT_GUIDE.md for complete setup instructions
+
+================================================================================

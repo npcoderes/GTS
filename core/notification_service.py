@@ -117,7 +117,7 @@ class NotificationService:
             
             # Build data payload - merge custom data with defaults
             message_data = {
-                'click_action': 'FLUTTER_NOTIFICATION_CLICK',
+                # 'click_action': 'FLUTTER_NOTIFICATION_CLICK',
             }
             # Add notification_type only if not already in data
             if data and 'type' in data:
@@ -151,7 +151,7 @@ class NotificationService:
     
     def send_to_user(self, user, title, body, data=None, notification_type='general'):
         """
-        Send notification to a user using their stored FCM token.
+        Send notification to a user on ALL their active devices.
         
         Args:
             user: User model instance
@@ -161,18 +161,33 @@ class NotificationService:
             notification_type: Type for app routing
             
         Returns:
-            dict with status and message_id
+            dict with status, sent_count, and results
         """
-        from core.notification_models import NotificationLog
+        from core.notification_models import NotificationLog, DeviceToken
         
-        # Check if user has FCM token
-        if not user.fcm_token:
-            logger.warning(f"User {user.id} has no FCM token registered")
-            return {'status': 'skipped', 'error': 'No FCM token registered'}
+        # Get all active device tokens for this user
+        device_tokens = DeviceToken.objects.filter(user=user, is_active=True)
         
-        result = self.send_to_device(
-            user.fcm_token, title, body, data, notification_type
-        )
+        if not device_tokens.exists():
+            logger.warning(f"User {user.id} has no active device tokens")
+            return {'status': 'skipped', 'error': 'No active device tokens', 'sent_count': 0}
+        
+        # Send to all devices
+        results = []
+        sent_count = 0
+        
+        for device in device_tokens:
+            result = self.send_to_device(
+                device.token, title, body, data, notification_type
+            )
+            results.append({
+                'device_id': device.id,
+                'platform': device.platform,
+                'result': result
+            })
+            
+            if result['status'] == 'sent':
+                sent_count += 1
         
         # Log the notification
         NotificationLog.objects.create(
@@ -181,13 +196,18 @@ class NotificationService:
             title=title,
             body=body,
             data=data or {},
-            status='SENT' if result['status'] == 'sent' else 'FAILED',
+            status='SENT' if sent_count > 0 else 'FAILED',
             sent_at=timezone.now()
         )
 
-        logger.info(f"Notification logged: {user.email} - {notification_type}")
+        logger.info(f"Notification sent to {sent_count}/{len(results)} devices for {user.email}")
         
-        return result
+        return {
+            'status': 'sent' if sent_count > 0 else 'failed',
+            'sent_count': sent_count,
+            'total_devices': len(results),
+            'results': results
+        }
     
     def _mock_send(self, token, title, body, data, notification_type):
         """Mock send for development - logs instead of sending."""

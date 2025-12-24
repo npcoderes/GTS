@@ -99,30 +99,23 @@ def get_user_permissions_from_db(user):
     Get computed permissions for a user.
     
     Logic:
-    1. Start with default False for all permissions
+    1. Start with empty dict
     2. Apply role-based permissions (from all active roles)
     3. Apply user-specific overrides (takes precedence)
+    4. Return only granted permissions (true values)
     
-    Returns dict of {permission_code: bool} or None if tables don't exist
+    Returns dict of {permission_code: bool} with only granted permissions or None if tables don't exist
     """
     try:
-        # Get all permission codes
-        all_permissions = Permission.objects.all().values_list('code', flat=True)
-        result = {code: False for code in all_permissions}
-        
-        # If no permissions in database, return None to trigger fallback
-        if not result:
-            return None
-        
-        # Set can_view_trips to True by default (base permission)
-        if 'can_view_trips' in result:
-            result['can_view_trips'] = True
+        # Start with empty result - only add granted permissions
+        result = {}
         
         # Check if user is Super Admin - they get all permissions
         is_super_admin = user.user_roles.filter(role__code='SUPER_ADMIN', active=True).exists()
         if is_super_admin:
-            all_true = {code: True for code in result}
-            return normalize_permissions(all_true)
+            all_permissions = Permission.objects.all().values_list('code', flat=True)
+            result = {code: True for code in all_permissions}
+            return normalize_permissions(result)
         
         # Get user's active role codes
         user_role_codes = list(user.user_roles.filter(active=True).values_list('role__code', flat=True))
@@ -134,8 +127,7 @@ def get_user_permissions_from_db(user):
         ).select_related('permission').values_list('permission__code', flat=True)
         
         for perm_code in role_perms:
-            if perm_code in result:
-                result[perm_code] = True
+            result[perm_code] = True
         
         # If no database permissions found, fall back to hardcoded defaults
         # This ensures backward compatibility during migration
@@ -143,14 +135,16 @@ def get_user_permissions_from_db(user):
             for role_code in user_role_codes:
                 if role_code in DEFAULT_ROLE_PERMISSIONS:
                     for perm_code in DEFAULT_ROLE_PERMISSIONS[role_code]:
-                        if perm_code in result:
-                            result[perm_code] = True
+                        result[perm_code] = True
         
         # Apply user-specific overrides
         user_perms = UserPermission.objects.filter(user=user).select_related('permission')
         for up in user_perms:
-            if up.permission.code in result:
-                result[up.permission.code] = up.granted
+            if up.granted:
+                result[up.permission.code] = True
+            else:
+                # If explicitly revoked, remove from result
+                result.pop(up.permission.code, None)
         
         # Normalize to include both snake_case and camelCase
         return normalize_permissions(result)

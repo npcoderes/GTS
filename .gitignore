@@ -1,8 +1,43 @@
-*.json
+# Python
 *.pyc
 __pycache__/
+*.pyo
+*.pyd
+.Python
+
+# Environment
 .env
+.env.local
+.env.*.local
+venv/
+env/
+ENV/
+
+# Django
 db.sqlite3
-logs/*.log
+db.sqlite3-journal
 staticfiles/
+media/
+*.log
+logs/*.log
+
+# Celery
 celerybeat-schedule*
+
+# Secrets & Credentials
+firebase-credentials.json
+*-firebase-adminsdk-*.json
+*.pem
+*.key
+*.crt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

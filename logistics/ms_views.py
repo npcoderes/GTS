@@ -30,7 +30,7 @@ class MSDashboardView(views.APIView):
                 ms = get_object_or_404(Station, id=ms_id_param, type='MS')
         
         # 3. Try from User Role
-        if not ms:
+        if  not ms:
             user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
             if user_role and user_role.station and user_role.station.type == 'MS':
                 ms = user_role.station
@@ -122,7 +122,7 @@ class MSDashboardView(views.APIView):
                 "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else timezone.localtime(timezone.now()).isoformat(), # Fallback
                 "completedTime": timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
                 "dbsName": trip.dbs.name if trip.dbs else "Unknown",
-                "route": f"{ms.name} -> {trip.dbs.name}" if trip.dbs else f"{ms.name} -> ?"
+                "route": f"from {ms.name} to {trip.dbs.name}" if trip.dbs else f"from {ms.name} to ?"
             })
             
         return Response({
@@ -393,25 +393,55 @@ class MSFillStartView(views.APIView):
         token_val = request.data.get('tripToken')
         pressure = request.data.get('pressure')
         mfm = request.data.get('mfm')
+        photo_base64 = request.data.get('photoBase64')
         
         if not token_val:
             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
+        # Handle photo upload
+        photo_file = None
+        if photo_base64:
+            try:
+                import base64
+                from django.core.files.base import ContentFile
+                import uuid
+                
+                if ';base64,' in photo_base64:
+                    format, imgstr = photo_base64.split(';base64,')
+                    ext = format.split('/')[-1] if '/' in format else 'jpg'
+                else:
+                    imgstr = photo_base64
+                    ext = 'jpg'
+                
+                file_name = f"ms_prefill_{trip.id}_{uuid.uuid4().hex[:6]}.{ext}"
+                photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
+            except Exception as e:
+                print(f"Error decoding prefill photo: {e}")
+        
         # Get or create MSFilling record
         filling, created = MSFilling.objects.get_or_create(trip=trip)
         
         # Update filling start time and readings
         filling.start_time = timezone.now()
-        if pressure: filling.prefill_pressure_bar = pressure
-        if mfm: filling.prefill_mfm = mfm
+        if pressure:
+            print(f"Setting prefill pressure: {pressure}")
+            filling.prefill_pressure_bar = pressure
+        else:
+            print("No prefill pressure provided")
+        if mfm:
+            print(f"Setting prefill mfm: {mfm}")
+            filling.prefill_mfm = mfm
+        else:
+            print("No prefill mfm provided")
+        if photo_file: filling.prefill_photo_operator = photo_file
         filling.save()
 
         # Update trip status and step tracking
         trip.status = 'FILLING'
-        trip.current_step = 3  # Step 3: MS Filling in progress
-        trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}
+        if trip.update_step(3):
+            trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}
         trip.save()
 
         # Send WebSocket update to Driver
@@ -461,6 +491,7 @@ class MSFillEndView(views.APIView):
         token_val = request.data.get('tripToken')
         pressure = request.data.get('pressure')
         mfm = request.data.get('mfm')
+        photo_base64 = request.data.get('photoBase64')
         
         if not token_val:
              return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -470,10 +501,39 @@ class MSFillEndView(views.APIView):
         # Get MSFilling record
         filling = get_object_or_404(MSFilling, trip=trip)
         
+        # Handle photo upload
+        photo_file = None
+        if photo_base64:
+            try:
+                import base64
+                from django.core.files.base import ContentFile
+                import uuid
+                
+                if ';base64,' in photo_base64:
+                    format, imgstr = photo_base64.split(';base64,')
+                    ext = format.split('/')[-1] if '/' in format else 'jpg'
+                else:
+                    imgstr = photo_base64
+                    ext = 'jpg'
+                
+                file_name = f"ms_postfill_{trip.id}_{uuid.uuid4().hex[:6]}.{ext}"
+                photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
+            except Exception as e:
+                print(f"Error decoding postfill photo: {e}")
+        
         # Update filling end time and readings
         filling.end_time = timezone.now()
-        if pressure: filling.postfill_pressure_bar = pressure
-        if mfm: filling.postfill_mfm = mfm
+        if pressure:
+            print(f"Setting postfill pressure: {pressure}")
+            filling.postfill_pressure_bar = pressure
+        else:
+            print("No postfill pressure provided")
+        if mfm:
+            print(f"Setting postfill mfm: {mfm}")
+            filling.postfill_mfm = mfm
+        else:
+            print("No postfill mfm provided")
+        if photo_file: filling.postfill_photo_operator = photo_file
         
         # Calculate filled quantity
         if filling.prefill_mfm and filling.postfill_mfm:
@@ -535,7 +595,7 @@ class MSConfirmFillingView(views.APIView):
     
     def post(self, request):
         token_val = request.data.get('tripToken')
-        delivered_qty = request.data.get('deliveredQty')
+        # delivered_qty = request.data.get('deliveredQty')
         
         if not token_val:
              return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -543,29 +603,31 @@ class MSConfirmFillingView(views.APIView):
         trip = get_object_or_404(Trip, token__token_no=token_val)
         filling = get_object_or_404(MSFilling, trip=trip)
         
-        if delivered_qty:
-             filling.filled_qty_kg = delivered_qty
-             filling.save()
+        # if delivered_qty:
+        #      filling.filled_qty_kg = delivered_qty
+        
+        # Validate: postfill_mfm - prefill_mfm should match filled_qty_kg
+        if filling.prefill_mfm and filling.postfill_mfm and filling.filled_qty_kg:
+            calculated_qty = float(filling.postfill_mfm) - float(filling.prefill_mfm)
+            if abs(calculated_qty - float(filling.filled_qty_kg)) > 0.01:
+                return Response({
+                    'error': 'Quantity mismatch',
+                    'message': f'Calculated quantity ({calculated_qty} kg) does not match filled quantity ({filling.filled_qty_kg} kg)'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Mark as confirmed by MS operator
+        filling.confirmed_by_ms_operator = request.user
+        filling.save()
 
-        # Generate STO logic here or just mark status?
-        # User says "Operation confirmed" -> status: COMPLETED (or similar)
-        # We will set to DISPATCHED as it leaves MS?
-        # But payload expectation says "trip": {"status": "COMPLETED"}
-        # Let's verify if COMPLETED is appropriate. If it's the *filling* completion, maybe FILLED is enough?
-        # If the trip is starting, DISPATCHED is the correct flow.
-        # But if the user wants "COMPLETED" in response, we can send that string key for frontend
-        # while keeping internal status correct.
-
-        trip.status = 'DISPATCHED'
-        trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
-        trip.ms_departure_at = timezone.now()
-        trip.current_step = 4  # Step 4: Departed MS, heading to DBS
-        trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+        # Mark operator confirmed in step_data
+        # Stay at step 3 until driver also confirms
+        if trip.current_step >= 3:
+            trip.step_data = {**trip.step_data, 'ms_operator_confirmed': True}
         trip.save()
         
         return Response({
             "success": True,
-            "message": "Operation confirmed",
+            "message": "Operation confirmed by operator. Waiting for driver confirmation.",
             "trip": {
                 "status": "COMPLETED" # For frontend UI as requested
             }
@@ -601,7 +663,7 @@ class MSStockTransferListView(views.APIView):
             
             data.append({
                 "id": f"{trip.id}",
-                "route": f"{trip.ms.name} → {trip.dbs.name}",
+                "route": f"from {trip.ms.name} to {trip.dbs.name}",
                 "product": "CNG",
                 "quantity": qty,
                 "status": trip.status,

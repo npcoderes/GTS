@@ -156,30 +156,6 @@ DEFAULT_PERMISSIONS = [
         'category': 'requests'
     },
     {
-        'code': 'can_accept_trips',
-        'name': 'Accept Trips',
-        'description': 'Can accept incoming trips',
-        'category': 'trips'
-    },
-    {
-        'code': 'can_confirm_arrival',
-        'name': 'Confirm Arrival',
-        'description': 'Can confirm vehicle arrival at station',
-        'category': 'trips'
-    },
-    {
-        'code': 'can_record_readings',
-        'name': 'Record Readings',
-        'description': 'Can record meter readings',
-        'category': 'trips'
-    },
-    {
-        'code': 'can_start_filling',
-        'name': 'Start Filling',
-        'description': 'Can initiate filling process at MS',
-        'category': 'trips'
-    },
-    {
         'code': 'can_approve_request',
         'name': 'Approve Request',
         'description': 'Can approve or reject stock requests',
@@ -192,15 +168,9 @@ DEFAULT_PERMISSIONS = [
         'category': 'drivers'
     },
     {
-        'code': 'can_view_trips',
-        'name': 'View Trips',
-        'description': 'Can view trip information',
-        'category': 'trips'
-    },
-    {
         'code': 'can_override_tokens',
-        'name': 'Override Tokens',
-        'description': 'Can override or modify tokens',
+        'name': 'Manual Tokens Generation',
+        'description': 'Can Generate manual tokens',
         'category': 'tokens'
     },
     {
@@ -221,14 +191,13 @@ DEFAULT_PERMISSIONS = [
 DEFAULT_ROLE_PERMISSIONS = {
     'DBS_OPERATOR': ['can_submit_manual_request'],
     'MS_OPERATOR': [],  # MS dashboard is default - no special permissions needed
-    'EIC': ['can_manage_clusters', 'can_manage_drivers', 'can_trigger_correction_actions'],
+    'EIC': ['can_manage_clusters', 'can_manage_drivers', 'can_trigger_correction_actions', 'can_override_tokens', 'can_approve_request'],
     'SGL_TRANSPORT_VENDOR': ['can_manage_drivers'],
     'DRIVER': [],  # No permissions for driver
     'SUPER_ADMIN': [  # All permissions
-        'can_submit_manual_request', 'can_accept_trips', 'can_confirm_arrival', 
-        'can_record_readings', 'can_start_filling', 'can_approve_request', 
-        'can_manage_drivers', 'can_view_trips', 'can_override_tokens', 
+        'can_submit_manual_request', 'can_approve_request', 
+        'can_manage_drivers', 'can_override_tokens', 
         'can_manage_clusters', 'can_trigger_correction_actions'
     ],
-    'SGL_CUSTOMER': ['can_accept_trips'],
+    'SGL_CUSTOMER': [],
 }

@@ -98,7 +98,7 @@ class CustomerDashboardView(views.APIView):
             trip_list.append({
                 "id": f"{trip.id}",
                 "status": 'AT_DBS' if trip.status == 'DECANTING_CONFIRMED' else trip.status,
-                "route": f"{trip.ms.name} → {trip.dbs.name}",
+                "route": f"from {trip.ms.name} to {trip.dbs.name}",
                 "msName": trip.ms.name,
                 "dbsName": trip.dbs.name,
                 "scheduledTime": timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
@@ -301,7 +301,7 @@ class CustomerPendingTripsView(views.APIView):
 
             payload.append({
                 'id': f'{trip.id}',
-                'route': f"{trip.ms.name if trip.ms else 'MS'} → {trip.dbs.name if trip.dbs else 'DBS'}",
+                'route': f"from {trip.ms.name if trip.ms else 'MS'} to {trip.dbs.name if trip.dbs else 'DBS'}",
                 'scheduledTime': timezone.localtime(trip.started_at or trip.created_at).isoformat() if (trip.started_at or trip.created_at) else None,
                 'vehicleNumber': trip.vehicle.registration_no if trip.vehicle else 'NA',
                 'priority': priority,

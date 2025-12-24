@@ -160,12 +160,23 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                         # Check if driver is on an active trip
                         active_trip = Trip.objects.filter(
                             driver=driver,
-                            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS']
+                            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED', 'RETURNED_TO_MS']
                         ).exists()
                         
                         if active_trip:
                             return Response({
                                 'error': 'Driver is currently on another trip'
+                            }, status=status.HTTP_400_BAD_REQUEST)
+                        
+                        # Check if driver is already assigned to another ASSIGNING stock request
+                        pending_assignment = StockRequest.objects.filter(
+                            target_driver=driver,
+                            status='ASSIGNING'
+                        ).exclude(id=stock_request.id).exists()
+                        
+                        if pending_assignment:
+                            return Response({
+                                'error': 'Driver already has a pending trip offer'
                             }, status=status.HTTP_400_BAD_REQUEST)
                         
                         # Update stock request - approve and assign
@@ -684,6 +695,145 @@ class EICPermissionsView(views.APIView):
 # =============================================================================
 # NEW EIC APIs - Network Overview, Reconciliation, Vehicle Tracking, Queue
 # =============================================================================
+
+class EICNetworkStationsView(views.APIView):
+    """
+    API Path: GET /api/eic/network-stations
+    Returns only MS and DBS stations without trips data for better performance.
+    """
+    def get(self, request):
+        from core.models import UserRole, MSDBSMap
+        
+        eic_station_ids = UserRole.objects.filter(
+            user=request.user,
+            role__code='EIC',
+            active=True,
+            station__type='MS'
+        ).values_list('station_id', flat=True)
+        
+        if not eic_station_ids:
+            is_super_admin = request.user.user_roles.filter(
+                role__code='SUPER_ADMIN', 
+                active=True
+            ).exists()
+            if not is_super_admin:
+                return Response({'msStations': [], 'dbsStations': []})
+            ms_stations = Station.objects.filter(type='MS')
+        else:
+            ms_stations = Station.objects.filter(type='MS', id__in=eic_station_ids)
+        
+        dbs_mappings = MSDBSMap.objects.filter(
+            ms_id__in=[ms.id for ms in ms_stations],
+            active=True
+        ).select_related('ms', 'dbs')
+        
+        dbs_to_ms_map = {mapping.dbs_id: mapping.ms.code for mapping in dbs_mappings}
+        dbs_ids_from_map = set([mapping.dbs_id for mapping in dbs_mappings])
+        
+        dbs_from_parent = Station.objects.filter(
+            type='DBS',
+            parent_station_id__in=[ms.id for ms in ms_stations]
+        )
+        
+        for dbs in dbs_from_parent:
+            if dbs.id not in dbs_ids_from_map:
+                dbs_ids_from_map.add(dbs.id)
+                parent_ms = next((ms for ms in ms_stations if ms.id == dbs.parent_station_id), None)
+                if parent_ms:
+                    dbs_to_ms_map[dbs.id] = parent_ms.code
+        
+        dbs_stations = Station.objects.filter(type='DBS', id__in=list(dbs_ids_from_map))
+        
+        return Response({
+            'msStations': [{
+                'msId': ms.code,
+                'msName': ms.name,
+                'location': ms.address or ms.city or ''
+            } for ms in ms_stations],
+            'dbsStations': [{
+                'dbsId': dbs.code,
+                'dbsName': dbs.name,
+                'msId': dbs_to_ms_map.get(dbs.id),
+                'location': dbs.address or dbs.city or ''
+            } for dbs in dbs_stations]
+        })
+
+
+class EICNetworkTripsView(views.APIView):
+    """
+    API Path: GET /api/eic/network-trips
+    Returns trips data with optional filtering by msId and/or dbsId.
+    """
+    def get(self, request):
+        from core.models import UserRole
+        from django.conf import settings
+        import os
+        
+        # Get BASE_URL from environment
+        base_url = os.getenv('BASE_URL', 'http://localhost:8001')
+        
+        eic_station_ids = UserRole.objects.filter(
+            user=request.user,
+            role__code='EIC',
+            active=True,
+            station__type='MS'
+        ).values_list('station_id', flat=True)
+        
+        is_super_admin = request.user.user_roles.filter(
+            role__code='SUPER_ADMIN', 
+            active=True
+        ).exists()
+        
+        trips = Trip.objects.filter(
+            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'COMPLETED', 'CANCELLED']
+        ).select_related('ms', 'dbs', 'driver', 'vehicle').prefetch_related('ms_fillings', 'dbs_decantings')
+        
+        if not is_super_admin and eic_station_ids:
+            trips = trips.filter(ms_id__in=eic_station_ids)
+        
+        ms_id = request.query_params.get('msId')
+        dbs_id = request.query_params.get('dbsId')
+        
+        if ms_id:
+            trips = trips.filter(ms__code=ms_id)
+        if dbs_id:
+            trips = trips.filter(dbs__code=dbs_id)
+        
+        trips = trips.order_by('-started_at')
+        
+        trip_data = []
+        for trip in trips:
+            # Get photo URLs
+            ms_filling = trip.ms_fillings.first()
+            dbs_decanting = trip.dbs_decantings.first()
+            
+            photos = {
+                'msPrefillDriver': f"{base_url}{ms_filling.prefill_photo.url}" if ms_filling and ms_filling.prefill_photo else None,
+                'msPostfillDriver': f"{base_url}{ms_filling.postfill_photo.url}" if ms_filling and ms_filling.postfill_photo else None,
+                'msPrefillOperator': f"{base_url}{ms_filling.prefill_photo_operator.url}" if ms_filling and ms_filling.prefill_photo_operator else None,
+                'msPostfillOperator': f"{base_url}{ms_filling.postfill_photo_operator.url}" if ms_filling and ms_filling.postfill_photo_operator else None,
+                'dbsPreDecantDriver': f"{base_url}{dbs_decanting.pre_decant_photo.url}" if dbs_decanting and dbs_decanting.pre_decant_photo else None,
+                'dbsPostDecantDriver': f"{base_url}{dbs_decanting.post_decant_photo.url}" if dbs_decanting and dbs_decanting.post_decant_photo else None,
+                'dbsPreDecantOperator': f"{base_url}{dbs_decanting.pre_decant_photo_operator.url}" if dbs_decanting and dbs_decanting.pre_decant_photo_operator else None,
+                'dbsPostDecantOperator': f"{base_url}{dbs_decanting.post_decant_photo_operator.url}" if dbs_decanting and dbs_decanting.post_decant_photo_operator else None,
+            }
+            
+            trip_data.append({
+                'id': str(trip.id),
+                'msId': trip.ms.code if trip.ms else None,
+                'msName': trip.ms.name if trip.ms else None,
+                'dbsId': trip.dbs.code if trip.dbs else None,
+                'dbsName': trip.dbs.name if trip.dbs else None,
+                'status': trip.status,
+                'scheduledTime': timezone.localtime(trip.started_at).isoformat() if trip.started_at else None,
+                'completedTime': timezone.localtime(trip.completed_at).isoformat() if trip.completed_at else None,
+                'driverName': trip.driver.full_name if trip.driver else None,
+                'vehicleNumber': trip.vehicle.registration_no if trip.vehicle else None,
+                'photos': photos
+            })
+        
+        return Response({'trips': trip_data})
+
 
 class EICNetworkOverviewView(views.APIView):
     """

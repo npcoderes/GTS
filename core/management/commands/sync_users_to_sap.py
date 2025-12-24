@@ -39,6 +39,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Dry run - show what would be synced without actually syncing',
         )
+        parser.add_argument(
+            '--force',
+            action='store_true',
+            help='Force sync even for recently synced users',
+        )
 
     def handle(self, *args, **options):
         # Build queryset based on arguments
@@ -96,10 +101,28 @@ class Command(BaseCommand):
                 continue
 
             try:
+                # Check if user was recently synced (within last hour)
+                from django.utils import timezone
+                from datetime import timedelta
+                
+                recently_synced = False
+                if user.sap_last_synced_at and not options['force']:
+                    time_diff = timezone.now() - user.sap_last_synced_at
+                    recently_synced = time_diff < timedelta(hours=1)
+                
+                if recently_synced:
+                    self.stdout.write(self.style.WARNING(f"  ⊘ Skipped (synced {time_diff} ago)"))
+                    success_count += 1
+                    continue
+                
+                # Sync user to SAP
                 result = sap_service.sync_user_to_sap(user, operation='CREATE')
                 
                 if result['success']:
                     success_count += 1
+                    # Update sync timestamp
+                    user.sap_last_synced_at = timezone.now()
+                    user.save(update_fields=['sap_last_synced_at'])
                     self.stdout.write(self.style.SUCCESS(f"  ✓ Synced successfully"))
                     if result.get('response'):
                         logger.debug(f"SAP response for {user.email}: {result['response']}")

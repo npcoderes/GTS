@@ -559,5 +559,125 @@ class SAPIntegrationService:
             }
 
 
+    def _build_station_payload(self, station, operation='CREATE'):
+        """
+        Build SAP payload for station synchronization.
+        
+        Args:
+            station: Station model instance
+            operation: 'CREATE' for create/update operations
+            
+        Returns:
+            Dictionary with SAP payload
+        """
+        payload = {
+            "INPUT1": station.sap_station_id or station.code,  # Station ID
+            "INPUT2": station.name,  # Station name
+            "INPUT3": station.address or "",  # Address
+            "INPUT4": station.city or "",  # City
+            "INPUT5": station.phone or "",  # Phone
+            "INPUT6": station.type,  # Type: MS or DBS
+            "INPUT7": "",  # Parent MS ID (for DBS)
+            "INPUT8": "",  # Reserved
+            "INPUT9": "",  # Reserved
+            "INPUT10": operation,  # Operation type
+        }
+        
+        # If DBS, add parent MS ID
+        if station.type == 'DBS' and station.parent_station:
+            payload["INPUT7"] = station.parent_station.sap_station_id or station.parent_station.code
+        
+        return payload
+    
+    def sync_station_to_sap(self, station, operation='CREATE'):
+        """
+        Synchronize station data to SAP.
+        
+        Args:
+            station: Station model instance
+            operation: 'CREATE' for create/update operations
+            
+        Returns:
+            dict: {
+                'success': bool,
+                'response': dict or None,
+                'error': str or None
+            }
+        """
+        if not self.enabled:
+            logger.info(f"SAP sync skipped (disabled) for station: {station.code}")
+            return {'success': True, 'response': None, 'error': 'SAP integration disabled'}
+        
+        try:
+            payload = self._build_station_payload(station, operation)
+            url = self.get_station_url()
+            
+            logger.info(f"Syncing station {station.code} to SAP. Operation: {operation}")
+            logger.debug(f"SAP Payload: {payload}")
+            
+            # Make request with retries
+            last_error = None
+            for attempt in range(1, self.retry_count + 1):
+                try:
+                    # Prepare auth
+                    auth = None
+                    if self.username and self.password:
+                        from requests.auth import HTTPBasicAuth
+                        auth = HTTPBasicAuth(self.username, self.password)
+                    
+                    response = requests.post(
+                        url,
+                        json=payload,
+                        timeout=self.timeout,
+                        headers={'Content-Type': 'application/json'},
+                        auth=auth
+                    )
+                    
+                    response.raise_for_status()
+                    
+                    result_data = response.json()
+                    logger.info(f"SAP sync successful for station {station.code}")
+                    logger.debug(f"SAP Response: {result_data}")
+                    
+                    return {
+                        'success': True,
+                        'response': result_data,
+                        'error': None
+                    }
+                    
+                except requests.exceptions.Timeout as e:
+                    last_error = f"Timeout on attempt {attempt}/{self.retry_count}"
+                    logger.warning(f"SAP request timeout for station {station.code} (attempt {attempt}/{self.retry_count})")
+                    
+                except requests.exceptions.RequestException as e:
+                    last_error = str(e)
+                    logger.warning(f"SAP request failed for station {station.code} (attempt {attempt}/{self.retry_count}): {e}")
+                    
+                    # Don't retry on 4xx errors (client errors)
+                    if hasattr(e, 'response') and e.response is not None:
+                        if 400 <= e.response.status_code < 500:
+                            break
+            
+            # All retries failed
+            error_msg = f"SAP sync failed after {self.retry_count} attempts: {last_error}"
+            logger.error(f"SAP sync failed for station {station.code}: {error_msg}")
+            
+            return {
+                'success': False,
+                'response': None,
+                'error': error_msg
+            }
+            
+        except Exception as e:
+            error_msg = f"Unexpected error during SAP sync: {str(e)}"
+            logger.error(f"SAP sync error for station {station.code}: {error_msg}", exc_info=True)
+            
+            return {
+                'success': False,
+                'response': None,
+                'error': error_msg
+            }
+
+
 # Singleton instance
 sap_service = SAPIntegrationService()

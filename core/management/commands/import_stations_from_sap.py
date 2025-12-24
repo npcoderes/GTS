@@ -30,11 +30,17 @@ class Command(BaseCommand):
             action='store_true',
             help='Update existing stations if they already exist',
         )
+        parser.add_argument(
+            '--force',
+            action='store_true',
+            help='Force import even for recently synced stations',
+        )
 
     def handle(self, *args, **options):
         station_type = options.get('station_type')
         dry_run = options['dry_run']
         update_existing = options['update_existing']
+        force_import = options['force']
 
         if dry_run:
             self.stdout.write(self.style.WARNING('\n🧪 DRY RUN MODE - No actual changes will be made\n'))
@@ -117,10 +123,22 @@ class Command(BaseCommand):
 
             try:
                 if existing_station:
-                    if update_existing:
+                    # Check if recently synced (within last hour)
+                    from datetime import timedelta
+                    
+                    recently_synced = False
+                    if existing_station.sap_last_synced_at:
+                        time_diff = timezone.now() - existing_station.sap_last_synced_at
+                        recently_synced = time_diff < timedelta(hours=1)
+                    
+                    if recently_synced and not update_existing and not force_import:
+                        skipped_count += 1
+                        self.stdout.write(self.style.WARNING(f"  ⊘ Skipped (synced {time_diff} ago)"))
+                    elif update_existing:
                         # Update existing station
                         for key, value in station_data.items():
                             setattr(existing_station, key, value)
+                        existing_station.sap_last_synced_at = timezone.now()
                         existing_station.save()
                         updated_count += 1
                         self.stdout.write(self.style.SUCCESS(f"  ✓ Updated existing station"))
@@ -129,6 +147,7 @@ class Command(BaseCommand):
                         self.stdout.write(self.style.WARNING(f"  ⊘ Skipped (already exists, use --update-existing to update)"))
                 else:
                     # Create new station
+                    station_data['sap_last_synced_at'] = timezone.now()
                     new_station = Station.objects.create(**station_data)
                     created_count += 1
                     self.stdout.write(self.style.SUCCESS(f"  ✓ Created new station (ID: {new_station.id})"))

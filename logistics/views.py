@@ -116,9 +116,12 @@ class StockRequestViewSet(viewsets.ModelViewSet):
                                 },
                                 notification_type='stock_request'
                             )
-        except Exception:
-            # Do not block creation on notification issues
-            pass
+        except Exception as e:
+            logger.error(
+                f"Failed to send stock request notification for request {stock_request.id}: {e}",
+                exc_info=True,
+                extra={'stock_request_id': stock_request.id, 'dbs_id': dbs.id if dbs else None}
+            )
 
 class TripViewSet(viewsets.ModelViewSet):
     """
@@ -137,6 +140,11 @@ class TripViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = Trip.objects.all()
+        
+        # Filter for Transport Admin - only show trips from their drivers
+        user = self.request.user
+        if user and user.user_roles.filter(role__code='TRANSPORT_ADMIN', active=True).exists():
+            queryset = queryset.filter(driver__vendor=user)
         
         # Filter by DBS ID
         dbs_id = self.request.query_params.get('dbs_id')
@@ -161,6 +169,30 @@ class TripViewSet(viewsets.ModelViewSet):
         trip = get_trip_by_token(token_id)
         return Response(TripSerializer(trip).data)
 
+    @action(detail=True, methods=['get'], url_path='ms-fillings')
+    def ms_fillings(self, request, pk=None):
+        """Get MS filling records for a trip"""
+        trip = self.get_object()
+        fillings = MSFilling.objects.filter(trip=trip)
+        serializer = MSFillingSerializer(fillings, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='dbs-decantings')
+    def dbs_decantings(self, request, pk=None):
+        """Get DBS decanting records for a trip"""
+        trip = self.get_object()
+        decantings = DBSDecanting.objects.filter(trip=trip)
+        serializer = DBSDecantingSerializer(decantings, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='reconciliations')
+    def reconciliations(self, request, pk=None):
+        """Get reconciliation records for a trip"""
+        trip = self.get_object()
+        reconciliations = Reconciliation.objects.filter(trip=trip)
+        serializer = ReconciliationSerializer(reconciliations, many=True)
+        return Response(serializer.data)
+
 class DriverViewSet(viewsets.ModelViewSet):
     """
     API Path: /api/drivers/
@@ -177,6 +209,24 @@ class DriverViewSet(viewsets.ModelViewSet):
     """
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
+    
+    def get_queryset(self):
+        queryset = Driver.objects.all()
+        user = self.request.user
+        
+        # Filter by vendor for transport vendors
+        if user.user_roles.filter(role__code='SGL_TRANSPORT_VENDOR', active=True).exists():
+            queryset = queryset.filter(vendor=user)
+        
+        return queryset.order_by('-id')
+    
+    def perform_create(self, serializer):
+        user = self.request.user
+        # Auto-assign vendor for transport vendors
+        if user.user_roles.filter(role__code='SGL_TRANSPORT_VENDOR', active=True).exists():
+            serializer.save(vendor=user)
+        else:
+            serializer.save()
 
     @action(detail=True, methods=['get'])
     def token(self, request, pk=None):
@@ -194,6 +244,9 @@ class DriverViewSet(viewsets.ModelViewSet):
     def trips(self, request, pk=None):
         driver = self.get_object()
         trips = Trip.objects.filter(driver=driver).order_by('-id')
+
+        if not trips.exists():
+            return Response({'message': 'No trips found for this driver'}, status=404)
         
         page = self.paginate_queryset(trips)
         if page is not None:
@@ -240,10 +293,111 @@ class ShiftViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = Shift.objects.all()
+        user = self.request.user
+        
+        # Filter by vendor for transport vendors
+        if user.user_roles.filter(role__code='SGL_TRANSPORT_VENDOR', active=True).exists():
+            queryset = queryset.filter(driver__vendor=user)
+        
         status_param = self.request.query_params.get('status', None)
         if status_param:
             queryset = queryset.filter(status=status_param)
         return queryset.order_by('-created_at')
+
+    def update(self, request, *args, **kwargs):
+        """
+        Update shift with overlap validation.
+        Updated shift requires EIC approval again.
+        """
+        shift = self.get_object()
+        driver_id = request.data.get('driver', shift.driver_id)
+        vehicle_id = request.data.get('vehicle', shift.vehicle_id)
+        start_time = request.data.get('start_time', shift.start_time)
+        end_time = request.data.get('end_time', shift.end_time)
+
+        if driver_id and start_time and end_time:
+            # Check overlaps excluding current shift
+            overlapping_onetime = Shift.objects.filter(
+                driver_id=driver_id,
+                status__in=['PENDING', 'APPROVED'],
+                start_time__lt=end_time,
+                end_time__gt=start_time,
+                is_recurring=False
+            ).exclude(id=shift.id)
+
+            if overlapping_onetime.exists():
+                overlap = overlapping_onetime.first()
+                overlap_start = timezone.localtime(overlap.start_time)
+                overlap_end = timezone.localtime(overlap.end_time)
+                return Response({
+                    'error': 'Overlapping shift exists',
+                    'message': f'Driver already has a one-time shift from {overlap_start.strftime("%Y-%m-%d %I:%M %p")} to {overlap_end.strftime("%Y-%m-%d %I:%M %p")}',
+                    'existing_shift_id': overlap.id
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            existing_recurring = Shift.objects.filter(
+                driver_id=driver_id,
+                status__in=['PENDING', 'APPROVED'],
+                is_recurring=True
+            ).exclude(id=shift.id)
+
+            new_start_dt = parse_datetime(start_time) if isinstance(start_time, str) else start_time
+            new_end_dt = parse_datetime(end_time) if isinstance(end_time, str) else end_time
+            new_start_local = timezone.localtime(new_start_dt)
+            new_end_local = timezone.localtime(new_end_dt)
+            new_start_time = new_start_local.time()
+            new_end_time = new_end_local.time()
+
+            for existing_shift in existing_recurring:
+                exist_start_local = timezone.localtime(existing_shift.start_time)
+                exist_end_local = timezone.localtime(existing_shift.end_time)
+                exist_start = exist_start_local.time()
+                exist_end = exist_end_local.time()
+
+                overlap = False
+                if exist_start <= exist_end:
+                    if new_start_time < exist_end and new_end_time > exist_start:
+                        overlap = True
+                else:
+                    overlap = True
+
+                if overlap:
+                    return Response({
+                        'error': 'Overlapping recurring shift',
+                        'message': f'Driver has a daily shift from {exist_start_local.strftime("%I:%M %p")} to {exist_end_local.strftime("%I:%M %p")}',
+                        'existing_shift_id': existing_shift.id
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+        if vehicle_id and start_time and end_time and driver_id:
+            overlapping_vehicle = Shift.objects.filter(
+                vehicle_id=vehicle_id,
+                status__in=['PENDING', 'APPROVED'],
+                start_time__lt=end_time,
+                end_time__gt=start_time
+            ).exclude(driver_id=driver_id).exclude(id=shift.id)
+
+            if overlapping_vehicle.exists():
+                conflict = overlapping_vehicle.first()
+                conflict_start = timezone.localtime(conflict.start_time)
+                conflict_end = timezone.localtime(conflict.end_time)
+                return Response({
+                    'error': 'Vehicle already scheduled',
+                    'message': f"Vehicle is in another driver's shift from {conflict_start.strftime('%Y-%m-%d %I:%M %p')} to {conflict_end.strftime('%Y-%m-%d %I:%M %p')}.",
+                    'existing_shift_id': conflict.id,
+                    'conflict_driver_id': conflict.driver_id
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = self.get_serializer(shift, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated_shift = serializer.save(status='PENDING', approved_by=None, rejection_reason=None)
+
+        return Response({
+            'success': True,
+            'message': 'Shift updated. Pending EIC approval.',
+            'shift_id': updated_shift.id,
+            'status': updated_shift.status,
+            'data': serializer.data
+        })
 
     def create(self, request, *args, **kwargs):
         """
@@ -268,9 +422,11 @@ class ShiftViewSet(viewsets.ModelViewSet):
             
             if overlapping_onetime.exists():
                 overlap = overlapping_onetime.first()
+                overlap_start = timezone.localtime(overlap.start_time)
+                overlap_end = timezone.localtime(overlap.end_time)
                 return Response({
                     'error': 'Overlapping shift exists',
-                    'message': f'Driver already has a one-time shift from {overlap.start_time.strftime("%Y-%m-%d %H:%M")} to {overlap.end_time.strftime("%Y-%m-%d %H:%M")}',
+                    'message': f'Driver already has a one-time shift from {overlap_start.strftime("%Y-%m-%d %I:%M %p")} to {overlap_end.strftime("%Y-%m-%d %I:%M %p")}',
                     'existing_shift_id': overlap.id
                 }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -282,12 +438,20 @@ class ShiftViewSet(viewsets.ModelViewSet):
                 is_recurring=True
             )
             
-            new_start_time = start_time.time() if hasattr(start_time, 'time') else parse_datetime(start_time).time()
-            new_end_time = end_time.time() if hasattr(end_time, 'time') else parse_datetime(end_time).time()
+            # Parse and convert to local time
+            new_start_dt = parse_datetime(start_time) if isinstance(start_time, str) else start_time
+            new_end_dt = parse_datetime(end_time) if isinstance(end_time, str) else end_time
+            new_start_local = timezone.localtime(new_start_dt)
+            new_end_local = timezone.localtime(new_end_dt)
+            new_start_time = new_start_local.time()
+            new_end_time = new_end_local.time()
             
             for shift in existing_recurring:
-                exist_start = shift.start_time.time()
-                exist_end = shift.end_time.time()
+                # Convert existing shift times to local time
+                exist_start_local = timezone.localtime(shift.start_time)
+                exist_end_local = timezone.localtime(shift.end_time)
+                exist_start = exist_start_local.time()
+                exist_end = exist_end_local.time()
                 
                 # Check time overlap
                 overlap = False
@@ -301,7 +465,7 @@ class ShiftViewSet(viewsets.ModelViewSet):
                 if overlap:
                      return Response({
                         'error': 'Overlapping recurring shift',
-                        'message': f'Driver has a daily shift from {shift.start_time.strftime("%H:%M")} to {shift.end_time.strftime("%H:%M")}',
+                        'message': f'Driver has a daily shift from {exist_start_local.strftime("%I:%M %p")} to {exist_end_local.strftime("%I:%M %p")}',
                         'existing_shift_id': shift.id
                     }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -316,9 +480,11 @@ class ShiftViewSet(viewsets.ModelViewSet):
 
             if overlapping_vehicle.exists():
                 conflict = overlapping_vehicle.first()
+                conflict_start = timezone.localtime(conflict.start_time)
+                conflict_end = timezone.localtime(conflict.end_time)
                 return Response({
                     'error': 'Vehicle already scheduled',
-                    'message': f"Vehicle is in another driver's shift from {conflict.start_time.strftime('%Y-%m-%d %H:%M')} to {conflict.end_time.strftime('%Y-%m-%d %H:%M')}.",
+                    'message': f"Vehicle is in another driver's shift from {conflict_start.strftime('%Y-%m-%d %I:%M %p')} to {conflict_end.strftime('%Y-%m-%d %I:%M %p')}.",
                     'existing_shift_id': conflict.id,
                     'conflict_driver_id': conflict.driver_id
                 }, status=status.HTTP_400_BAD_REQUEST)
@@ -367,8 +533,8 @@ class ShiftViewSet(viewsets.ModelViewSet):
                 driver.trained = True
                 driver.license_verified = True
                 driver.save(update_fields=['trained', 'license_verified'])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to update driver {shift.driver_id} training status: {e}")
         shift.save()
         return Response({'status': 'approved'})
 
@@ -405,6 +571,24 @@ class VehicleViewSet(viewsets.ModelViewSet):
     """
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
+    
+    def get_queryset(self):
+        queryset = Vehicle.objects.all()
+        user = self.request.user
+        
+        # Filter by vendor for transport vendors
+        if user.user_roles.filter(role__code='SGL_TRANSPORT_VENDOR', active=True).exists():
+            queryset = queryset.filter(vendor=user)
+        
+        return queryset.order_by('-id')
+    
+    def perform_create(self, serializer):
+        user = self.request.user
+        # Auto-assign vendor for transport vendors
+        if user.user_roles.filter(role__code='SGL_TRANSPORT_VENDOR', active=True).exists():
+            serializer.save(vendor=user)
+        else:
+            serializer.save()
 
 # --- Driver Operations ---
 
@@ -492,90 +676,16 @@ class TripCompleteView(views.APIView):
     """
     def post(self, request):
         token_id = request.data.get('token')
+        if not token_id:
+            return Response({'error': 'Token required'}, status=400)
+            
         trip = get_trip_by_token(token_id)
         trip.status = 'COMPLETED'
-        trip.current_step = '7'
+        trip.update_step(7)
         trip.ms_return_at = timezone.now()
         trip.completed_at = timezone.now()
-        trip.save()
+        trip.save()  # Signal will auto-create reconciliation
         
-        # Create Reconciliation Record
-        reconciliation_alert_created = False
-        try:
-            # Get MS filled quantity
-            ms_filling = trip.ms_fillings.first()
-            ms_filled_qty = ms_filling.filled_qty_kg if ms_filling and ms_filling.filled_qty_kg else 0
-            
-            # Get DBS delivered quantity
-            dbs_decanting = trip.dbs_decantings.first()
-            dbs_delivered_qty = dbs_decanting.delivered_qty_kg if dbs_decanting and dbs_decanting.delivered_qty_kg else 0
-            
-            # Calculate difference and variance
-            if ms_filled_qty > 0:
-                diff_qty = ms_filled_qty - dbs_delivered_qty
-                variance_pct = (diff_qty / ms_filled_qty) * 100
-                
-                # Determine status (ALERT if variance > 0.5%)
-                reconciliation_status = 'ALERT' if abs(variance_pct) > 0.5 else 'OK'
-                
-                # Create reconciliation record
-                reconciliation = Reconciliation.objects.create(
-                    trip=trip,
-                    ms_filled_qty_kg=ms_filled_qty,
-                    dbs_delivered_qty_kg=dbs_delivered_qty,
-                    diff_qty=diff_qty,
-                    variance_pct=variance_pct,
-                    status=reconciliation_status
-                )
-                
-                # If variance exceeds threshold, notify EIC (Alert record creation disabled)
-                if reconciliation_status == 'ALERT':
-                    reconciliation_alert_created = True
-                    
-                    # Notify EIC of the MS station
-                    try:
-                        from core.models import UserRole
-                        from core.notification_service import NotificationService
-                        
-                        ms = trip.ms
-                        if ms:
-                            eic_roles = UserRole.objects.filter(
-                                station=ms,
-                                role__code='EIC',
-                                active=True
-                            ).select_related('user')
-                            
-                            notifier = NotificationService()
-                            driver_name = trip.driver.full_name if trip.driver else 'Unknown'
-                            vehicle_no = trip.vehicle.registration_no if trip.vehicle else 'Unknown'
-                            
-                            for eic_role in eic_roles:
-                                if eic_role.user:
-                                    notifier.send_to_user(
-                                        user=eic_role.user,
-                                        title="⚠️ Variance Alert",
-                                        body=f"Trip {trip.token.token_no if trip.token else trip.id}: {abs(variance_pct):.2f}% variance detected",
-                                        data={
-                                            'type': 'VARIANCE_ALERT',
-                                            'reconciliation_id': str(reconciliation.id),
-                                            'trip_id': str(trip.id),
-                                            'token': trip.token.token_no if trip.token else None,
-                                            'variance_pct': str(round(abs(variance_pct), 2)),
-                                            'ms_filled_qty': str(ms_filled_qty),
-                                            'dbs_delivered_qty': str(dbs_delivered_qty),
-                                            'driver_name': driver_name,
-                                            'vehicle_no': vehicle_no,
-                                        },
-                                        notification_type='alert'
-                                    )
-                                    logger.info(f"Sent variance alert to EIC {eic_role.user.email} for trip {trip.id}")
-                    except Exception as e:
-                        logger.error(f"Failed to notify EIC about variance alert for trip {trip.id}: {e}")
-                        
-        except Exception as e:
-            # Log error but don't block trip completion
-            logger.warning(f"Failed to create reconciliation for trip {trip.id}: {e}")
-            
         # SAP Sync (GTS11) - Non-blocking
         try:
             from core.sap_integration import sap_service

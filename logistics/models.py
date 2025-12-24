@@ -163,6 +163,7 @@ class Trip(models.Model):
         ('IN_TRANSIT', 'In Transit'),
         ('AT_DBS', 'At DBS'),
         ('DECANTING_CONFIRMED', 'Decanting Confirmed'),
+        ('RETURNED_TO_MS', 'Returned to MS'),
         ('COMPLETED', 'Completed'),
         ('CANCELLED', 'Cancelled'),
     ]
@@ -224,8 +225,11 @@ class Trip(models.Model):
 
         # Check if at DBS or decanting (step 5)
         if self.status == 'AT_DBS' or self.dbs_decantings.exists():
-            # If decanting confirmed by operator, move to step 6
-            if self.dbs_decantings.filter(confirmed_by_dbs_operator__isnull=False).exists():
+            # If decanting confirmed by BOTH operator AND driver, move to step 6
+            if self.dbs_decantings.filter(
+                confirmed_by_dbs_operator__isnull=False,
+                confirmed_by_driver__isnull=False
+            ).exists():
                 return 6
             return 5
 
@@ -252,6 +256,31 @@ class Trip(models.Model):
         # No active trip (step 0)
         return 0
 
+    def update_step(self, new_step):
+        """
+        Safely update current_step with validation.
+        Ensures steps are updated sequentially (no skipping).
+        """
+        if new_step < 0 or new_step > 8:
+            return False
+        
+        # Allow same step (idempotent)
+        if new_step == self.current_step:
+            return True
+        
+        # Allow backward movement (for corrections)
+        if new_step < self.current_step:
+            self.current_step = new_step
+            return True
+        
+        # Only allow forward movement by 1 step at a time
+        if new_step == self.current_step + 1:
+            self.current_step = new_step
+            return True
+        
+        # Reject skipping steps
+        return False
+    
     def get_step_details(self):
         """
         Get detailed step information including substep progress.
@@ -312,7 +341,7 @@ class MSFilling(models.Model):
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     prefill_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    topup_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True) # Renamed or added if needed, but sticking to user request
+    topup_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     postfill_pressure_bar = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     prefill_mfm = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     postfill_mfm = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
@@ -320,9 +349,13 @@ class MSFilling(models.Model):
     confirmed_by_ms_operator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='confirmed_fillings')
     confirmed_by_driver = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='driver_confirmed_fillings')
     
-    # Photo Evidence
-    prefill_photo = models.ImageField(upload_to='ms_fillings/pre/', null=True, blank=True)
-    postfill_photo = models.ImageField(upload_to='ms_fillings/post/', null=True, blank=True)
+    # Photo Evidence - Driver
+    prefill_photo = models.ImageField(upload_to='ms_fillings/pre/driver/', null=True, blank=True)
+    postfill_photo = models.ImageField(upload_to='ms_fillings/post/driver/', null=True, blank=True)
+    
+    # Photo Evidence - MS Operator
+    prefill_photo_operator = models.ImageField(upload_to='ms_fillings/pre/operator/', null=True, blank=True)
+    postfill_photo_operator = models.ImageField(upload_to='ms_fillings/post/operator/', null=True, blank=True)
 
     class Meta:
         db_table = 'ms_filling'
@@ -342,9 +375,13 @@ class DBSDecanting(models.Model):
     confirmed_by_dbs_operator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='confirmed_decantings')
     confirmed_by_driver = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='driver_confirmed_decantings')
     
-    # Photo Evidence
-    pre_decant_photo = models.ImageField(upload_to='dbs_decantings/pre/', null=True, blank=True)
-    post_decant_photo = models.ImageField(upload_to='dbs_decantings/post/', null=True, blank=True)
+    # Photo Evidence - Driver
+    pre_decant_photo = models.ImageField(upload_to='dbs_decantings/pre/driver/', null=True, blank=True)
+    post_decant_photo = models.ImageField(upload_to='dbs_decantings/post/driver/', null=True, blank=True)
+    
+    # Photo Evidence - DBS Operator
+    pre_decant_photo_operator = models.ImageField(upload_to='dbs_decantings/pre/operator/', null=True, blank=True)
+    post_decant_photo_operator = models.ImageField(upload_to='dbs_decantings/post/operator/', null=True, blank=True)
 
     class Meta:
         db_table = 'dbs_decanting'
