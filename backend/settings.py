@@ -87,6 +87,9 @@ MIDDLEWARE = [
 
     # Custom logging middleware
     'backend.middleware.RequestLoggingMiddleware',
+    
+    # TEMPORARY: Force API errors for testing (REMOVE AFTER TESTING)
+    # 'core.test_error_middleware.ForceAPIErrorsMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'

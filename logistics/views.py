@@ -6,6 +6,10 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from core.error_response import (
+    error_response, validation_error_response, not_found_response,
+    unauthorized_response, forbidden_response, server_error_response
+)
 from .models import (
     Vehicle, Driver, StockRequest, Token, Trip,
     MSFilling, DBSDecanting, Reconciliation, Alert, Shift
@@ -165,7 +169,7 @@ class TripViewSet(viewsets.ModelViewSet):
     def status(self, request):
         token_id = request.query_params.get('token')
         if not token_id:
-            return Response({'error': 'Token required'}, status=400)
+            return validation_error_response('Token required')
         trip = get_trip_by_token(token_id)
         return Response(TripSerializer(trip).data)
 
@@ -238,7 +242,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         
         if trip and trip.token:
             return Response(TokenSerializer(trip.token).data)
-        return Response({'error': 'No active token'}, status=404)
+        return not_found_response('No active token')
 
     @action(detail=True, methods=['get'])
     def trips(self, request, pk=None):
@@ -246,7 +250,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         trips = Trip.objects.filter(driver=driver).order_by('-id')
 
         if not trips.exists():
-            return Response({'message': 'No trips found for this driver'}, status=404)
+            return not_found_response('No trips found for this driver')
         
         page = self.paginate_queryset(trips)
         if page is not None:
@@ -261,7 +265,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         try:
             driver = request.user.driver_profile
         except (AttributeError, Driver.DoesNotExist):
-            return Response({'error': 'User is not a driver'}, status=403)
+            return forbidden_response('User is not a driver')
         
         trips = (
         Trip.objects
@@ -517,10 +521,7 @@ class ShiftViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         if not request.user.user_roles.filter(role__code='EIC', active=True).exists():
-            return Response(
-                {'error': 'Permission denied. Only EIC can approve shifts.'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied. Only EIC can approve shifts.')
         
         shift = self.get_object()
         shift.status = 'APPROVED'
@@ -541,10 +542,7 @@ class ShiftViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
         if not request.user.user_roles.filter(role__code='EIC', active=True).exists():
-            return Response(
-                {'error': 'Permission denied. Only EIC can reject shifts.'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied. Only EIC can reject shifts.')
         
         shift = self.get_object()
         reason = request.data.get('reason', '').strip()
@@ -639,12 +637,12 @@ class MeterReadingConfirmationView(views.APIView):
         trip = get_trip_by_token(token_id)
         
         if not reading_value or not reading_type:
-            return Response({'error': 'Missing reading or type'}, status=400)
+            return validation_error_response('Missing reading or type')
             
         try:
             val = float(reading_value)
         except ValueError:
-            return Response({'error': 'Invalid reading value'}, status=400)
+            return validation_error_response('Invalid reading value')
 
         if reading_type == 'PRE_FILL_MFM':
              filling, _ = MSFilling.objects.get_or_create(trip=trip)
@@ -663,7 +661,7 @@ class MeterReadingConfirmationView(views.APIView):
              decanting.post_dec_pressure_bar = val
              decanting.save()
         else:
-            return Response({'error': 'Invalid reading type'}, status=400)
+            return validation_error_response('Invalid reading type')
             
         return Response({'status': 'confirmed', 'updated': reading_type})
 
@@ -677,7 +675,7 @@ class TripCompleteView(views.APIView):
     def post(self, request):
         token_id = request.data.get('token')
         if not token_id:
-            return Response({'error': 'Token required'}, status=400)
+            return validation_error_response('Token required')
             
         trip = get_trip_by_token(token_id)
         trip.status = 'COMPLETED'
@@ -730,14 +728,14 @@ class EmergencyReportView(views.APIView):
         
         # Validate required fields
         if not token_id:
-            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('Token is required')
         if not message:
             message = 'No additional details provided.'
         # Get trip from token
         try:
             trip = get_trip_by_token(token_id)
         except:
-            return Response({'error': 'Invalid token or trip not found'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Invalid token or trip not found')
         
         # Get MS station from trip
         ms = trip.ms

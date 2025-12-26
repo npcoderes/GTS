@@ -310,11 +310,10 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True}
         trip.save()
         
-        # Send WebSocket update to Driver
+        # WebSocket update to driver is disabled; send push notification instead
         try:
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
-            
             channel_layer = get_channel_layer()
             if trip.driver:
                 group_name = f"driver_{trip.driver.id}"
@@ -331,6 +330,24 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                         }
                     }
                 )
+
+            # Notification path retained for future use
+            # from core.notification_service import NotificationService
+            # notifier = NotificationService()
+            # if trip.driver and trip.driver.user:
+            #     notifier.send_to_user(
+            #         user=trip.driver.user,
+            #         title="Decanting started",
+            #         body="Decanting started at DBS",
+            #         data={
+            #             'type': 'DBS_DECANT_START',
+            #             'trip_id': str(trip.id),
+            #             'pre_decant_reading': str(decanting.pre_dec_reading or ''),
+            #             'pressure': str(decanting.pre_dec_pressure_bar or ''),
+            #             'message': 'Decanting started at DBS'
+            #         },
+            #         notification_type='dbs_decant_start'
+            #     )
         except Exception as e:
             print(f"WebSocket Error: {e}")
 
@@ -400,11 +417,10 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True}
         trip.save()
         
-        # Send WebSocket update to Driver
+        # WebSocket update to driver is disabled; send push notification instead
         try:
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
-            
             channel_layer = get_channel_layer()
             if trip.driver:
                 group_name = f"driver_{trip.driver.id}"
@@ -421,6 +437,24 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                         }
                     }
                 )
+
+            # Notification path retained for future use
+            # from core.notification_service import NotificationService
+            # notifier = NotificationService()
+            # if trip.driver and trip.driver.user:
+            #     notifier.send_to_user(
+            #         user=trip.driver.user,
+            #         title="Decanting ended",
+            #         body="Decanting ended at DBS",
+            #         data={
+            #             'type': 'DBS_DECANT_END',
+            #             'trip_id': str(trip.id),
+            #             'post_decant_reading': str(decanting.post_decant_reading or ''),
+            #             'pressure': str(decanting.post_dec_pressure_bar or ''),
+            #             'message': 'Decanting ended at DBS'
+            #         },
+            #         notification_type='dbs_decant_end'
+            #     )
         except Exception as e:
             print(f"WebSocket Error: {e}")
 

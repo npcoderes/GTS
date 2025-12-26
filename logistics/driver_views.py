@@ -6,6 +6,10 @@ from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from core.error_response import (
+    error_response, validation_error_response, not_found_response,
+    unauthorized_response, forbidden_response, server_error_response
+)
 from .models import StockRequest, Trip, Shift, Token
 import json
 import logging
@@ -53,7 +57,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('User is not a driver')
         
         now = timezone.now()
         
@@ -116,11 +120,11 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-             return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+             return forbidden_response('User is not a driver')
              
         stock_req_id = request.data.get('stock_request_id')
         if not stock_req_id:
-            return Response({'error': 'stock_request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('stock_request_id is required')
             
         try:
             with transaction.atomic():
@@ -129,10 +133,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                 
                 # 1. Validate Status - Must be ASSIGNING
                 if stock_req.status != 'ASSIGNING':
-                    return Response({
-                        'error': 'Trip is no longer available',
-                        'current_status': stock_req.status
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                    return validation_error_response('Trip is no longer available', extra_data={'current_status': stock_req.status})
                     
                 # 2. Validate Timeout
                 if stock_req.assignment_started_at:
@@ -144,16 +145,11 @@ class DriverTripViewSet(viewsets.ViewSet):
                         stock_req.target_driver = None
                         stock_req.save()
                         logger.warning(f"Driver {driver.id} tried to accept expired offer for StockRequest {stock_req.id} (elapsed: {elapsed:.0f}s)")
-                        return Response({
-                            'error': 'Offer has expired. The 5-minute acceptance window has passed.',
-                            'expired': True
-                        }, status=status.HTTP_400_BAD_REQUEST)
+                        return validation_error_response('Offer has expired. The 5-minute acceptance window has passed.', extra_data={'expired': True})
                      
                 # 3. Validate Target Driver (Must be assigned to this driver)
                 if stock_req.target_driver and stock_req.target_driver != driver:
-                    return Response({
-                        'error': 'This trip was not offered to you'
-                    }, status=status.HTTP_403_FORBIDDEN)
+                    return forbidden_response('This trip was not offered to you')
                     
                 # 4. Find driver's active shift for vehicle
                 from .services import find_active_shift
@@ -170,9 +166,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                 # Note: find_active_shift handles both one-time and recurring
                 
                 if not active_shift:
-                    return Response({
-                        'error': 'No active shift found. Please ensure you have an approved shift.'
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                    return validation_error_response('No active shift found. Please ensure you have an approved shift.')
 
                 # 5. Create Token (Refactored to token_no hash)
                 ms = stock_req.dbs.parent_station
@@ -269,9 +263,9 @@ class DriverTripViewSet(viewsets.ViewSet):
                 return Response(response_data)
                 
         except StockRequest.DoesNotExist:
-            return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Request not found')
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return server_error_response(str(e))
 
     @action(detail=False, methods=['post'], url_path='reject')
     def reject_trip(self, request):
@@ -288,13 +282,13 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('User is not a driver')
         
         stock_req_id = request.data.get('stock_request_id')
         reason = request.data.get('reason', 'No reason provided')
         
         if not stock_req_id:
-            return Response({'error': 'stock_request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('stock_request_id is required')
         
         try:
             with transaction.atomic():
@@ -302,16 +296,11 @@ class DriverTripViewSet(viewsets.ViewSet):
                 
                 # Validate status
                 if stock_req.status != 'ASSIGNING':
-                    return Response({
-                        'error': 'Trip is no longer available for rejection',
-                        'current_status': stock_req.status
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                    return validation_error_response('Trip is no longer available for rejection', extra_data={'current_status': stock_req.status})
                 
                 # Validate target driver
                 if stock_req.target_driver and stock_req.target_driver != driver:
-                    return Response({
-                        'error': 'This trip was not offered to you'
-                    }, status=status.HTTP_403_FORBIDDEN)
+                    return forbidden_response('This trip was not offered to you')
                 
                 # Reset the stock request for EIC to reassign
                 stock_req.status = 'PENDING'
@@ -369,9 +358,9 @@ class DriverTripViewSet(viewsets.ViewSet):
                 })
 
         except StockRequest.DoesNotExist:
-            return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Request not found')
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return server_error_response(str(e))
 
     @action(detail=False, methods=['post'], url_path='arrival/ms')
     def arrival_at_ms(self, request):   # app arivead at ms app 
@@ -381,11 +370,11 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('User is not a driver')
             
         token_val = request.data.get('token')
         if not token_val:
-            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('Token is required')
             
         try:
             # Find trip by token
@@ -436,7 +425,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                 "message": "Arrival confirmed"
             })
         except Trip.DoesNotExist:
-            return Response({'error': 'Active trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Active trip not found for this token')
 
     @action(detail=False, methods=['post'], url_path='arrival/dbs')
     def arrival_at_dbs(self, request):
@@ -446,11 +435,11 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-             return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+             return forbidden_response('User is not a driver')
              
         token_val = request.data.get('token')
         if not token_val:
-            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('Token is required')
             
         try:
             trip = Trip.objects.select_related('token', 'vehicle', 'dbs').get(
@@ -502,7 +491,7 @@ class DriverTripViewSet(viewsets.ViewSet):
             })
             
         except Trip.DoesNotExist:
-             return Response({'error': 'Active trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+             return not_found_response('Active trip not found for this token')
 
     @action(detail=False, methods=['get', 'post'], url_path='resume')
     def resume_trip(self, request):
@@ -556,9 +545,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     }, status=status.HTTP_404_NOT_FOUND)
                     
             except Exception as e:
-                return Response({
-                    'error': f'Error finding trip: {str(e)}'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return validation_error_response(f'Error finding trip: {str(e)}')
         else:
             # No token provided - find any active trip for this driver (original behavior)
             active_trip = Trip.objects.filter(
@@ -624,7 +611,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('User is not a driver')
             
         token_val = request.data.get('token')
         station_type = request.data.get('stationType') # MS or DBS
@@ -746,9 +733,9 @@ class DriverTripViewSet(viewsets.ViewSet):
             return Response({"success": True})
             
         except Trip.DoesNotExist:
-             return Response({'error': 'Trip not found'}, status=status.HTTP_404_NOT_FOUND)
+             return not_found_response('Trip not found')
         except Exception as e:
-             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             return server_error_response(str(e))
 
     @action(detail=False, methods=['post'], url_path='emergency')
     def report_emergency(self, request):
@@ -787,7 +774,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         
         # Validate required fields
         if not token_id:
-            return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('Token is required')
         if not message:
            message = 'No additional details provided.'
         
@@ -795,7 +782,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         try:
             trip = Trip.objects.select_related('vehicle', 'ms', 'dbs', 'driver', 'token').get(token__token_no=token_id)
         except Trip.DoesNotExist:
-            return Response({'error': 'Invalid token or trip not found'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Invalid token or trip not found')
         
         # Get MS station from trip
         ms = trip.ms

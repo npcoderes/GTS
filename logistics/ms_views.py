@@ -3,6 +3,10 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from core.error_response import (
+    error_response, validation_error_response, not_found_response,
+    unauthorized_response, forbidden_response, server_error_response
+)
 from .models import Trip, MSFilling, Token
 from core.models import Station
 from datetime import datetime, timedelta
@@ -37,10 +41,7 @@ class MSDashboardView(views.APIView):
                 
         # 4. Fallback/Error
         if not ms:
-             return Response(
-                {'error': 'User is not assigned to an MS station and no ms_id provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+             return validation_error_response('User is not assigned to an MS station and no ms_id provided')
 
         # Date Filtering
         end_date_str = request.query_params.get('end_date')
@@ -63,7 +64,7 @@ class MSDashboardView(views.APIView):
                 start_date_obj = end_date_obj - timedelta(days=30)
                 
         except ValueError:
-            return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('Invalid date format. Use YYYY-MM-DD')
 
         # Fetch Trips
         # Relevant statuses for MS dashboard
@@ -152,10 +153,7 @@ class MSTripScheduleView(views.APIView):
         except (Station.DoesNotExist, ValueError):
             ms = Station.objects.filter(code=ms_id, type='MS').first()
             if not ms:
-                return Response(
-                    {'error': f'MS station not found: {ms_id}'}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return not_found_response(f'MS station not found: {ms_id}')
         
         # Fetch trips for this MS (today and future, plus recent past)
         trips = Trip.objects.filter(ms=ms).select_related(
@@ -248,7 +246,7 @@ class MSConfirmArrivalView(views.APIView):
     def post(self, request):
         token_val = request.data.get('tripToken')
         if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
 
@@ -299,7 +297,7 @@ class MSFillResumeView(views.APIView):
     def post(self, request):
         token_val = request.data.get('tripToken')
         if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('tripToken is required')
 
         try:
             trip = Trip.objects.select_related(
@@ -374,9 +372,9 @@ class MSFillResumeView(views.APIView):
             })
 
         except Trip.DoesNotExist:
-            return Response({'error': 'Trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Trip not found for this token')
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return server_error_response(str(e))
 
 
 class MSFillStartView(views.APIView):
@@ -396,7 +394,7 @@ class MSFillStartView(views.APIView):
         photo_base64 = request.data.get('photoBase64')
         
         if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
@@ -494,7 +492,7 @@ class MSFillEndView(views.APIView):
         photo_base64 = request.data.get('photoBase64')
         
         if not token_val:
-             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+             return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
@@ -598,7 +596,7 @@ class MSConfirmFillingView(views.APIView):
         # delivered_qty = request.data.get('deliveredQty')
         
         if not token_val:
-             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+             return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         filling = get_object_or_404(MSFilling, trip=trip)
@@ -610,10 +608,10 @@ class MSConfirmFillingView(views.APIView):
         if filling.prefill_mfm and filling.postfill_mfm and filling.filled_qty_kg:
             calculated_qty = float(filling.postfill_mfm) - float(filling.prefill_mfm)
             if abs(calculated_qty - float(filling.filled_qty_kg)) > 0.01:
-                return Response({
-                    'error': 'Quantity mismatch',
-                    'message': f'Calculated quantity ({calculated_qty} kg) does not match filled quantity ({filling.filled_qty_kg} kg)'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return validation_error_response('Quantity mismatch', extra_data={
+                    'calculated_qty': calculated_qty,
+                    'filled_qty': float(filling.filled_qty_kg)
+                })
         
         # Mark as confirmed by MS operator
         filling.confirmed_by_ms_operator = request.user
@@ -703,10 +701,7 @@ class MSClusterView(views.APIView):
                 ms = user_role.station
         
         if not ms:
-             return Response(
-                {'error': 'User is not assigned to an MS station'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+             return validation_error_response('User is not assigned to an MS station')
 
         # Get Linked DBS
         linked_dbs = Station.objects.filter(parent_station=ms, type='DBS')
@@ -755,7 +750,7 @@ class MSStockTransferHistoryByDBSView(views.APIView):
                 ms = user_role.station
         
         if not ms:
-             return Response({'error': 'MS not identified'}, status=status.HTTP_400_BAD_REQUEST)
+             return validation_error_response('MS not identified')
 
         # Get Parameters
         dbs_id = request.query_params.get('dbs_id')
@@ -763,7 +758,7 @@ class MSStockTransferHistoryByDBSView(views.APIView):
         end_date_str = request.query_params.get('end_date')
         
         if not dbs_id:
-            return Response({'error': 'dbs_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('dbs_id is required')
             
         # Get DBS
         dbs = get_object_or_404(Station, id=dbs_id, type='DBS', parent_station=ms)
@@ -876,10 +871,7 @@ class MSPendingArrivalsView(views.APIView):
                 ms = user_role.station
         
         if not ms:
-            return Response(
-                {'error': 'User is not assigned to an MS station'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('User is not assigned to an MS station')
         
         # Get trips that have arrived at MS (waiting for filling to start)
         # These are trips where driver has clicked "Arrive at MS"

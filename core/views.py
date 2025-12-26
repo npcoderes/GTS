@@ -23,6 +23,10 @@ from core.sap_integration import sap_service
 
 from core.utils import send_welcome_email, send_otp_email, send_reset_success_email
 from core.models import PasswordResetSession
+from core.error_response import (
+    error_response, validation_error_response, not_found_response,
+    unauthorized_response, forbidden_response, server_error_response
+)
 import uuid
 import random
 
@@ -215,14 +219,10 @@ def login_view(request):
                 user_role_name = str(role_name).upper() if role_name else ''
                 
                 if input_role != user_role_code and input_role != user_role_name:
-                     return Response({
-                        'message': 'User role does not match'
-                    }, status=status.HTTP_401_UNAUTHORIZED)
+                     return unauthorized_response('User role does not match')
             
             if not role_code:   
-                return Response({
-                    'message': 'User role or station not found'
-                }, status=status.HTTP_401_UNAUTHORIZED)
+                return unauthorized_response('User role or station not found')
             # Construct response
             user_data = {
                 'id': user.id,
@@ -251,9 +251,7 @@ def login_view(request):
             ip_address = request.META.get('REMOTE_ADDR', '')
             log_auth_event(f'LOGIN_{login_method}', user_input, ip_address, False, 'Invalid credentials')
             
-            return Response({
-                'message': 'Invalid credentials'
-            }, status=status.HTTP_401_UNAUTHORIZED)
+            return unauthorized_response('Invalid credentials')
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -275,7 +273,7 @@ def set_mpin(request):
         
         # Verify password
         if not user.check_password(password):
-             return Response({'message': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+             return unauthorized_response('Invalid password')
         
         # Save hashed MPIN
         user.mpin = make_password(mpin)
@@ -321,18 +319,18 @@ def change_password(request):
                     user = User.objects.filter(phone=username).first()
         
         if not user:
-             return Response({'message': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+             return unauthorized_response('Authentication required')
 
         # Verify old password ONLY if provided.
         # If NOT provided, we assume the Token/Session is sufficient proof (simpler flow requested by user).
         # We might want to enforce "Only if reset_required" for security, but user asked for simple flow.
         if old_password:
             if not user.check_password(old_password):
-                return Response({'message': 'Invalid old password'}, status=status.HTTP_400_BAD_REQUEST)
+                return validation_error_response('Invalid old password')
         
         # Security Check: If NO old password, ensure user IS authenticated.
         if not old_password and not request.user.is_authenticated:
-             return Response({'message': 'Old password required for unauthenticated request'}, status=status.HTTP_400_BAD_REQUEST)
+             return validation_error_response('Old password required for unauthenticated request')
 
         # Set new password
         user.set_password(new_password)
@@ -370,7 +368,7 @@ def logout_view(request):
         
         return Response({'message': 'Logged out successfully'})
     except Exception as e:
-        return Response({'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return error_response(str(e))
 
 
 
