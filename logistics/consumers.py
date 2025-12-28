@@ -1,6 +1,10 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+
+logger = logging.getLogger(__name__)
+
 
 class DriverConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -13,11 +17,13 @@ class DriverConsumer(AsyncWebsocketConsumer):
              token = params.get('token', None)
              
              if not token:
+                 logger.warning("WebSocket connection rejected: No token provided")
                  await self.close()
                  return
                  
              user = await self.get_user_from_token(token)
              if not user:
+                 logger.warning(f"WebSocket connection rejected: Invalid token")
                  await self.close()
                  return
                  
@@ -25,6 +31,7 @@ class DriverConsumer(AsyncWebsocketConsumer):
              self.driver_id = await self.get_driver_id(user)
              
              if not self.driver_id:
+                 logger.warning(f"WebSocket connection rejected: User {user.id} is not a driver")
                  await self.close()
                  return
                  
@@ -37,7 +44,7 @@ class DriverConsumer(AsyncWebsocketConsumer):
              )
              
              await self.accept()
-             print(f"Driver {self.driver_id} connected to {self.group_name}")
+             logger.info(f"Driver {self.driver_id} connected to {self.group_name}")
              
              # Send welcome message
              await self.send(text_data=json.dumps({
@@ -46,7 +53,7 @@ class DriverConsumer(AsyncWebsocketConsumer):
              }))
              
         except Exception as e:
-            print(f"WebSocket Connection Error: {e}")
+            logger.error(f"WebSocket Connection Error: {e}", exc_info=True)
             await self.close()
 
     async def disconnect(self, close_code):
@@ -55,10 +62,19 @@ class DriverConsumer(AsyncWebsocketConsumer):
                 self.group_name,
                 self.channel_name
             )
+            logger.info(f"Driver {getattr(self, 'driver_id', 'unknown')} disconnected (code: {close_code})")
 
     async def receive(self, text_data):
-        # We generally push TO client, but valid if client sends ack
-        pass
+        """Handle messages from the client (ping/pong for heartbeat)."""
+        try:
+            data = json.loads(text_data)
+            # Handle heartbeat ping
+            if data.get('type') == 'ping':
+                await self.send(text_data=json.dumps({'type': 'pong'}))
+        except json.JSONDecodeError:
+            pass
+        except Exception as e:
+            logger.error(f"Error processing WebSocket message: {e}")
 
     async def driver_update(self, event):
         """
@@ -100,11 +116,13 @@ class UserConsumer(AsyncWebsocketConsumer):
             token = params.get('token', None)
 
             if not token:
+                logger.warning("WebSocket connection rejected: No token provided")
                 await self.close()
                 return
 
             user = await self.get_user_from_token(token)
             if not user:
+                logger.warning(f"WebSocket connection rejected: Invalid token")
                 await self.close()
                 return
 
@@ -120,7 +138,7 @@ class UserConsumer(AsyncWebsocketConsumer):
             )
 
             await self.accept()
-            print(f"User {self.user_id} connected to {self.group_name}")
+            logger.info(f"User {self.user_id} connected to {self.group_name}")
 
             # Send welcome message
             await self.send(text_data=json.dumps({
@@ -129,7 +147,7 @@ class UserConsumer(AsyncWebsocketConsumer):
             }))
 
         except Exception as e:
-            print(f"WebSocket Connection Error: {e}")
+            logger.error(f"WebSocket Connection Error: {e}", exc_info=True)
             await self.close()
 
     async def disconnect(self, close_code):
@@ -138,10 +156,19 @@ class UserConsumer(AsyncWebsocketConsumer):
                 self.group_name,
                 self.channel_name
             )
+            logger.info(f"User {getattr(self, 'user_id', 'unknown')} disconnected (code: {close_code})")
 
     async def receive(self, text_data):
-        # Client messages can be handled here if needed
-        pass
+        """Handle messages from the client (ping/pong for heartbeat)."""
+        try:
+            data = json.loads(text_data)
+            # Handle heartbeat ping
+            if data.get('type') == 'ping':
+                await self.send(text_data=json.dumps({'type': 'pong'}))
+        except json.JSONDecodeError:
+            pass
+        except Exception as e:
+            logger.error(f"Error processing WebSocket message: {e}")
 
     async def permission_update(self, event):
         """
@@ -173,3 +200,4 @@ class UserConsumer(AsyncWebsocketConsumer):
             return Token.objects.get(key=token_key).user
         except Token.DoesNotExist:
             return None
+

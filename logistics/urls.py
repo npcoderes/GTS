@@ -135,6 +135,7 @@ urlpatterns = [
     # DBS Stock Requests apps
     path('dbs/stock-requests', DBSStockRequestViewSet.as_view({'get': 'list'}), name='dbs-stock-requests'),
     path('dbs/stock-requests/arrival/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_arrival'}), name='dbs-stock-request-confirm-arrival'),
+    path('dbs/stock-requests/decant/resume', DBSStockRequestViewSet.as_view({'post': 'decant_resume'}), name='dbs-decant-resume'),
     path('dbs/stock-requests/decant/start', DBSStockRequestViewSet.as_view({'post': 'decant_start'}), name='dbs-decant-start'),
     path('dbs/stock-requests/decant/end', DBSStockRequestViewSet.as_view({'post': 'decant_end'}), name='dbs-decant-end'),
     path('dbs/stock-requests/decant/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_decanting'}), name='dbs-decant-confirm'),

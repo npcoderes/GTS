@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from .models import Trip, StockRequest
 from core.models import Station
 from rest_framework.decorators import action
+import os
 
 class DBSDashboardView(views.APIView):
     """
@@ -39,9 +40,11 @@ class DBSDashboardView(views.APIView):
         # Fetch Trips for this DBS
         # Fetch Trips for this DBS
         # Filter relevant statuses
+        # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+        # Invalid (not in model): DISPATCHED, ARRIVED_AT_DBS, DECANTING_STARTED, DECANTING_COMPLETED
         relevant_statuses = [
-            'DISPATCHED', 'IN_TRANSIT', 'ARRIVED_AT_DBS', 'AT_DBS',
-            'DECANTING_STARTED', 'DECANTING_COMPLETED', 'DECANTING_CONFIRMED',
+            'IN_TRANSIT', 'AT_DBS',  # 'DISPATCHED', 'ARRIVED_AT_DBS' - not in model
+            'DECANTING_CONFIRMED',  # 'DECANTING_STARTED', 'DECANTING_COMPLETED' - not in model
             'COMPLETED'
         ]
         trips = Trip.objects.filter(dbs=dbs, status__in=relevant_statuses).select_related(
@@ -59,14 +62,15 @@ class DBSDashboardView(views.APIView):
         
         for trip in trips:
             # Map Backend Status to Frontend Categories
+            # Valid statuses only
             category = 'pending' # Default
-            if trip.status in ['DISPATCHED', 'IN_TRANSIT', 'ARRIVED_AT_DBS', 'AT_DBS']:
+            if trip.status in ['IN_TRANSIT', 'AT_DBS']:  # 'DISPATCHED', 'ARRIVED_AT_DBS' - not in model
                 category = 'pending'
                 summary['pending'] += 1
-            elif trip.status == 'DECANTING_STARTED':
+            elif trip.status == 'DECANTING_CONFIRMED':  # 'DECANTING_STARTED' - not in model
                 category = 'inProgress'
                 summary['inProgress'] += 1
-            elif trip.status in ['COMPLETED', 'DECANTING_COMPLETED']:
+            elif trip.status in ['COMPLETED']:  # 'DECANTING_COMPLETED' - not in model
                 category = 'completed'
                 summary['completed'] += 1
             
@@ -153,7 +157,11 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         if trip.status != 'AT_DBS':
              trip.status = 'AT_DBS'
              trip.dbs_arrival_at = timezone.now()
-             trip.save()
+        
+        # Mark DBS operator confirmation
+        trip.dbs_arrival_confirmed = True
+        trip.dbs_arrival_confirmed_at = timezone.now()
+        trip.save()
 
         return Response({
             "success": True,
@@ -174,13 +182,52 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         Returns existing DBSDecanting data if operator closed app after entering pre-reading
         """
         token_val = request.data.get('tripToken')
-        if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+        trip_id = request.data.get('tripId')
+        user = request.user
 
         try:
-            trip = Trip.objects.select_related(
-                'token', 'vehicle', 'driver', 'ms', 'dbs'
-            ).prefetch_related('dbs_decantings').get(token__token_no=token_val)
+            # Try to find trip by token first, then by tripId, then by DBS station
+            if token_val:
+                trip = Trip.objects.select_related(
+                    'token', 'vehicle', 'driver', 'ms', 'dbs'
+                ).prefetch_related('dbs_decantings').get(token__token_no=token_val)
+            elif trip_id:
+                trip = Trip.objects.select_related(
+                    'token', 'vehicle', 'driver', 'ms', 'dbs'
+                ).prefetch_related('dbs_decantings').get(id=trip_id)
+            else:
+                # Auto-find trip by DBS station where dbs_arrival_confirmed is True
+                # Get user's DBS station
+                dbs = None
+                user_role = user.user_roles.filter(role__code='DBS_OPERATOR', active=True).first()
+                if user_role and user_role.station and user_role.station.type == 'DBS':
+                    dbs = user_role.station
+                
+                if not dbs:
+                    return Response({'error': 'User is not assigned to a DBS station'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                # Find trip at this DBS that is confirmed and in progress
+                # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+                # Invalid (not in model): DECANTING_STARTED, DECANTING_COMPLETE
+                trip = Trip.objects.select_related(
+                    'token', 'vehicle', 'driver', 'ms', 'dbs'
+                ).prefetch_related('dbs_decantings').filter(
+                    dbs=dbs,
+                    status__in=['AT_DBS']  # 'DECANTING_STARTED', 'DECANTING_COMPLETE' - not in model STATUS_CHOICES
+                ).first()
+                
+                if not trip:
+                    return Response({
+                        'hasDecantingData': False,
+                        'tripToken': None,
+                        'vehicleNumber': None,
+                        'dbs_arrival_confirmed': False,
+                        'message': 'No confirmed trip found at this DBS'
+                    })
+            
+            # Get token value for response
+            actual_token = trip.token.token_no if trip.token else token_val
+            vehicle_number = trip.vehicle.registration_no if trip.vehicle else None
 
             # Get DBSDecanting record if exists
             from .models import DBSDecanting
@@ -190,55 +237,53 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                 # No decanting record yet, return empty state
                 return Response({
                     'hasDecantingData': False,
-                    'tripToken': token_val,
-                    'trip': {
-                        'id': trip.id,
-                        'status': trip.status,
-                        'currentStep': trip.current_step,
-                        'vehicle': {
-                            'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                            'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                        },
-                        'driver': {
-                            'name': trip.driver.full_name if trip.driver else None,
-                        },
-                        'route': {
-                            'from': trip.ms.name if trip.ms else None,
-                            'to': trip.dbs.name if trip.dbs else None,
-                        }
-                    }
+                    'tripToken': actual_token,
+                    'vehicleNumber': vehicle_number,
+                    'dbs_arrival_confirmed': trip.dbs_arrival_confirmed,
+                    # 'trip': {
+                    #     'id': trip.id,
+                    #     'status': trip.status,
+                    #     'currentStep': trip.current_step,
+                    #     'vehicle': {
+                    #         'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                    #         'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                    #     },
+                    #     'driver': {
+                    #         'name': trip.driver.full_name if trip.driver else None,
+                    #     },
+                    #     'route': {
+                    #         'from': trip.ms.name if trip.ms else None,
+                    #         'to': trip.dbs.name if trip.dbs else None,
+                    #     }
+                    # }
                 })
+            base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+
+            if decanting.confirmed_by_dbs_operator_id:
+                return Response({
+                        'hasDecantingData': False,
+                        'tripToken': None,
+                        'vehicleNumber': None,
+                        'dbs_arrival_confirmed': False,
+                        'message': 'No confirmed trip found at this DBS'
+                    })
 
             # Return existing decanting data
             return Response({
                 'hasDecantingData': True,
-                'tripToken': token_val,
-                'trip': {
-                    'id': trip.id,
-                    'status': trip.status,
-                    'currentStep': trip.current_step,
-                    'stepData': trip.step_data,
-                    'vehicle': {
-                        'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                        'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                    },
-                    'driver': {
-                        'name': trip.driver.full_name if trip.driver else None,
-                    },
-                    'route': {
-                        'from': trip.ms.name if trip.ms else None,
-                        'to': trip.dbs.name if trip.dbs else None,
-                    }
-                },
+                'tripToken': actual_token,
+                'vehicleNumber': vehicle_number,
+                'dbs_arrival_confirmed': trip.dbs_arrival_confirmed,
                 'decantingData': {
                     'id': decanting.id,
+                    'trip_id': trip.id,
                     'pre_dec_pressure_bar': str(decanting.pre_dec_pressure_bar) if decanting.pre_dec_pressure_bar else None,
                     'pre_dec_reading': str(decanting.pre_dec_reading) if decanting.pre_dec_reading else None,
                     'post_dec_pressure_bar': str(decanting.post_dec_pressure_bar) if decanting.post_dec_pressure_bar else None,
                     'post_dec_reading': str(decanting.post_dec_reading) if decanting.post_dec_reading else None,
                     'delivered_qty_kg': str(decanting.delivered_qty_kg) if decanting.delivered_qty_kg else None,
-                    'pre_decant_photo_url': decanting.pre_decant_photo.url if decanting.pre_decant_photo else None,
-                    'post_decant_photo_url': decanting.post_decant_photo.url if decanting.post_decant_photo else None,
+                    'pre_decant_photo_url': True if decanting.pre_decant_photo_operator else False,
+                    'post_decant_photo_url': True if decanting.post_decant_photo_operator else False,
                     'confirmed_by_dbs_operator': decanting.confirmed_by_dbs_operator_id is not None,
                     'start_time': decanting.start_time.isoformat() if decanting.start_time else None,
                     'end_time': decanting.end_time.isoformat() if decanting.end_time else None,
@@ -669,9 +714,13 @@ class DBSPendingArrivalsView(views.APIView):
         
         # Get trips that have arrived at DBS (waiting for decanting to start)
         # These are trips where driver has clicked "Arrive at DBS"
+        # Exclude trips where DBS operator has already confirmed
+        # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+        # Invalid (not in model): ARRIVED_AT_DBS
         pending_arrivals = Trip.objects.filter(
             dbs=dbs,
-            status__in=['AT_DBS', 'ARRIVED_AT_DBS']  # AT_DBS = arrived, waiting for decanting
+            status__in=['AT_DBS'],  # 'ARRIVED_AT_DBS' - not in model STATUS_CHOICES
+            dbs_arrival_confirmed=False  # Only show unconfirmed arrivals
         ).filter(
             dbs_arrival_at__isnull=False  # Driver has confirmed arrival
         ).select_related('vehicle', 'driver', 'driver__user', 'token', 'ms').order_by('-dbs_arrival_at')

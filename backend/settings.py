@@ -68,11 +68,30 @@ if SENTRY_DSN:
     )
 
 ASGI_APPLICATION = 'backend.asgi.application'
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+
+# Channel Layers Configuration
+# Use Redis for production (required for multi-worker support with Gunicorn/Daphne)
+# Falls back to InMemory for development if REDIS_URL is not set
+REDIS_URL = os.getenv('REDIS_URL', os.getenv('CELERY_BROKER_URL', ''))
+
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+                "capacity": 1500,  # Maximum messages in channel before oldest dropped
+                "expiry": 10,  # Message expiry in seconds
+            },
+        }
     }
-}
+else:
+    # Fallback for local development without Redis
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer"
+        }
+    }
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',           
