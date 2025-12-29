@@ -295,13 +295,8 @@ class MSFillResumeView(views.APIView):
 
     def post(self, request):
         token_val = request.data.get('tripToken')
-<<<<<<< Updated upstream
-        if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
-=======
         trip_id = request.data.get('tripId')
         user = request.user
->>>>>>> Stashed changes
 
         try:
             # Try to find trip by token first, then by tripId, then by MS station
