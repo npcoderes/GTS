@@ -160,8 +160,13 @@ class Trip(models.Model):
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('AT_MS', 'At MS'),
+        # ('FILLING', 'Filling'),
+        # ('FILLED', 'Filled'),
+        # ('DISPATCHED', 'Dispatched'),
         ('IN_TRANSIT', 'In Transit'),
         ('AT_DBS', 'At DBS'),
+        # ('DECANTING_STARTED', 'Decanting Started'),
+        # ('DECANTING_COMPLETE', 'Decanting Complete'),
         ('DECANTING_CONFIRMED', 'Decanting Confirmed'),
         ('RETURNED_TO_MS', 'Returned to MS'),
         ('COMPLETED', 'Completed'),
@@ -187,6 +192,14 @@ class Trip(models.Model):
     rtkm_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     route_deviation = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    # MS arrival confirmation by operator
+    ms_arrival_confirmed = models.BooleanField(default=False)
+    ms_arrival_confirmed_at = models.DateTimeField(null=True, blank=True)
+    
+    # DBS arrival confirmation by operator
+    dbs_arrival_confirmed = models.BooleanField(default=False)
+    dbs_arrival_confirmed_at = models.DateTimeField(null=True, blank=True)
 
     # Step tracking for driver app resume functionality
     current_step = models.IntegerField(default=0)  # 0-7: tracks current trip step
@@ -295,8 +308,8 @@ class Trip(models.Model):
             'status': self.status,
         }
 
-        # Step 3: MS Filling details
-        if step == 3:
+        # MS Filling details - include for step 3 and beyond (filling started or completed)
+        if step >= 3:
             ms_filling = self.ms_fillings.first()
             if ms_filling:
                 details['ms_filling'] = {
@@ -309,12 +322,13 @@ class Trip(models.Model):
                     'prefill_photo_url': ms_filling.prefill_photo.url if ms_filling.prefill_photo else None,
                     'postfill_photo_url': ms_filling.postfill_photo.url if ms_filling.postfill_photo else None,
                     'confirmed_by_ms_operator': ms_filling.confirmed_by_ms_operator_id is not None,
+                    'confirmed_by_driver': ms_filling.confirmed_by_driver_id is not None,
                     'start_time': ms_filling.start_time.isoformat() if ms_filling.start_time else None,
                     'end_time': ms_filling.end_time.isoformat() if ms_filling.end_time else None,
                 }
 
-        # Step 5: DBS Decanting details
-        if step == 5:
+        # DBS Decanting details - include for step 5 and beyond (decanting started or completed)
+        if step >= 5:
             dbs_decanting = self.dbs_decantings.first()
             if dbs_decanting:
                 details['dbs_decanting'] = {
@@ -327,6 +341,7 @@ class Trip(models.Model):
                     'pre_decant_photo_url': dbs_decanting.pre_decant_photo.url if dbs_decanting.pre_decant_photo else None,
                     'post_decant_photo_url': dbs_decanting.post_decant_photo.url if dbs_decanting.post_decant_photo else None,
                     'confirmed_by_dbs_operator': dbs_decanting.confirmed_by_dbs_operator_id is not None,
+                    'confirmed_by_driver': dbs_decanting.confirmed_by_driver_id is not None,
                     'start_time': dbs_decanting.start_time.isoformat() if dbs_decanting.start_time else None,
                     'end_time': dbs_decanting.end_time.isoformat() if dbs_decanting.end_time else None,
                 }

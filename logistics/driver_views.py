@@ -445,11 +445,14 @@ class DriverTripViewSet(viewsets.ViewSet):
             trip = Trip.objects.select_related('token', 'vehicle', 'dbs').get(
                 driver=driver,
                 token__token_no=token_val,
-                status__in=['IN_TRANSIT', 'AT_DBS','DISPATCHED']
+                # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+                # Invalid (not in model): DISPATCHED
+                status__in=['IN_TRANSIT', 'AT_DBS']  # 'DISPATCHED' - not in model STATUS_CHOICES
             )
             
             # Update status if not already
-            if trip.status == 'IN_TRANSIT' or trip.status == 'DISPATCHED':
+            # Valid statuses only: IN_TRANSIT -> AT_DBS
+            if trip.status == 'IN_TRANSIT':  # 'DISPATCHED' - not in model STATUS_CHOICES
                 trip.status = 'AT_DBS'
                 trip.dbs_arrival_at = timezone.now()
                 if trip.update_step(5):
@@ -548,9 +551,11 @@ class DriverTripViewSet(viewsets.ViewSet):
                 return validation_error_response(f'Error finding trip: {str(e)}')
         else:
             # No token provided - find any active trip for this driver (original behavior)
+            # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+            # Invalid (commented): FILLING, FILLED, DISPATCHED
             active_trip = Trip.objects.filter(
                 driver=driver,
-                status__in=['PENDING', 'AT_MS', 'FILLING', 'FILLED', 'IN_TRANSIT', 'DISPATCHED', 'AT_DBS', 'DECANTING_CONFIRMED']
+                status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']  # 'FILLING', 'FILLED', 'DISPATCHED' - not in model STATUS_CHOICES
             ).select_related(
                 'token', 'vehicle', 'ms', 'dbs', 'stock_request'
             ).prefetch_related(
@@ -661,7 +666,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     if photo_file:
                         filling.prefill_photo = photo_file
                     # Update step tracking
-                    trip.status = 'FILLING'
+                    # trip.status = 'FILLING'
                     if trip.update_step(3):
                         trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
                     trip.save()
@@ -678,17 +683,19 @@ class DriverTripViewSet(viewsets.ViewSet):
                         # Check if MS operator has also confirmed
                         if filling.confirmed_by_ms_operator:
                             # Both confirmed - proceed to next step
-                            trip.status = 'DISPATCHED'
+                            trip.status = 'IN_TRANSIT'  # Valid status - driver departing MS to DBS
                             trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
                             trip.ms_departure_at = timezone.now()
                             if trip.update_step(4):
                                 trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
                         else:
                             # Driver confirmed but waiting for operator
-                            trip.status = 'FILLED'
+                            # Status stays AT_MS until operator confirms
+                            pass
                     else:
                         # Post-reading done but not confirmed yet
-                        trip.status = 'FILLED'
+                        # Status stays AT_MS
+                        pass
                     trip.save()
                 filling.save()
                 
@@ -799,8 +806,10 @@ class DriverTripViewSet(viewsets.ViewSet):
         )
         
         # Update trip status to EMERGENCY
-        if trip.status not in ['COMPLETED', 'CANCELLED', 'EMERGENCY']:
-            trip.status = 'EMERGENCY'
+        # Note: 'EMERGENCY' is not in model STATUS_CHOICES
+        # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+        if trip.status not in ['COMPLETED', 'CANCELLED']:
+            # trip.status = 'EMERGENCY'  # Not in model STATUS_CHOICES - keeping current status
             trip.step_data = {
                 **trip.step_data, 
                 'emergency_reported': True,

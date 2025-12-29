@@ -10,6 +10,7 @@ from core.error_response import (
 from .models import Trip, MSFilling, Token
 from core.models import Station
 from datetime import datetime, timedelta
+import os
 
 
 class MSDashboardView(views.APIView):
@@ -255,17 +256,15 @@ class MSConfirmArrivalView(views.APIView):
 
         if trip.status == 'PENDING': # Or other valid statuses?
              trip.status = 'AT_MS'
-             trip.ms_return_at = timezone.now() # Are they returning? Or starting?
-             # Initial flow: PENDING -> AT_MS. Return flow: ARRIVED_AT_MS?
-             # If trip just started, it's PENDING or AT_MS.
-             # If user says "Arrival Confirm", it usually means driver arrived.
-             # If status is already AT_MS, just return success.
              trip.save()
         elif trip.status != 'AT_MS':
              # Maybe force update?
              trip.status = 'AT_MS'
              trip.save()
 
+        # Mark MS operator confirmation
+        trip.ms_arrival_confirmed = True
+        trip.ms_arrival_confirmed_at = timezone.now()
         trip.started_at = timezone.now()
         trip.save()
 
@@ -296,13 +295,58 @@ class MSFillResumeView(views.APIView):
 
     def post(self, request):
         token_val = request.data.get('tripToken')
+<<<<<<< Updated upstream
         if not token_val:
-            return validation_error_response('tripToken is required')
+            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+=======
+        trip_id = request.data.get('tripId')
+        user = request.user
+>>>>>>> Stashed changes
 
         try:
-            trip = Trip.objects.select_related(
-                'token', 'vehicle', 'driver', 'ms', 'dbs'
-            ).prefetch_related('ms_fillings').get(token__token_no=token_val)
+            # Try to find trip by token first, then by tripId, then by MS station
+            if token_val:
+                trip = Trip.objects.select_related(
+                    'token', 'vehicle', 'driver', 'ms', 'dbs'
+                ).prefetch_related('ms_fillings').get(token__token_no=token_val)
+            elif trip_id:
+                trip = Trip.objects.select_related(
+                    'token', 'vehicle', 'driver', 'ms', 'dbs'
+                ).prefetch_related('ms_fillings').get(id=trip_id)
+            else:
+                # Auto-find trip by MS station where ms_arrival_confirmed is True
+                # Get user's MS station
+                ms = None
+                user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
+                if user_role and user_role.station and user_role.station.type == 'MS':
+                    ms = user_role.station
+                
+                if not ms:
+                    return validation_error_response('User is not assigned to an MS station')
+                
+                # Find trip at this MS that is confirmed and in progress
+                # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+                # Invalid (not in model): FILLING, FILLED, DISPATCHED
+                trip = Trip.objects.select_related(
+                    'token', 'vehicle', 'driver', 'ms', 'dbs'
+                ).prefetch_related('ms_fillings').filter(
+                    ms=ms,
+                    # ms_arrival_confirmed=True,
+                    status__in=['AT_MS']  # 'FILLING', 'FILLED' - not in model STATUS_CHOICES
+                ).first()
+                
+                if not trip:
+                    return Response({
+                        'hasFillingData': False,
+                        'tripToken': None,
+                        'vehicleNumber': None,
+                        'ms_arrival_confirmed': False,
+                        'message': 'No confirmed trip found at this MS'
+                    })
+            
+            # Get token value for response
+            actual_token = trip.token.token_no if trip.token else token_val
+            vehicle_number = trip.vehicle.registration_no if trip.vehicle else None
 
             # Get MSFilling record if exists
             filling = trip.ms_fillings.first()
@@ -311,55 +355,71 @@ class MSFillResumeView(views.APIView):
                 # No filling record yet, return empty state
                 return Response({
                     'hasFillingData': False,
-                    'tripToken': token_val,
-                    'trip': {
-                        'id': trip.id,
-                        'status': trip.status,
-                        'currentStep': trip.current_step,
-                        'vehicle': {
-                            'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                            'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                        },
-                        'driver': {
-                            'name': trip.driver.full_name if trip.driver else None,
-                        },
-                        'route': {
-                            'from': trip.ms.name if trip.ms else None,
-                            'to': trip.dbs.name if trip.dbs else None,
-                        }
-                    }
+                    'tripToken': actual_token,
+                    'vehicleNumber': vehicle_number,
+                    'ms_arrival_confirmed': trip.ms_arrival_confirmed
+                    # 'trip': {
+                    #     'id': trip.id,
+                    #     'status': trip.status,
+                    #     'currentStep': trip.current_step,
+                    #     'vehicle': {
+                    #         'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                    #         'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                    #     },
+                    #     'driver': {
+                    #         'name': trip.driver.full_name if trip.driver else None,
+                    #     },
+                    #     'route': {
+                    #         'from': trip.ms.name if trip.ms else None,
+                    #         'to': trip.dbs.name if trip.dbs else None,
+                    #     }
+                    # }
                 })
+            base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+
+            if filling.confirmed_by_ms_operator_id:
+                return Response({
+                        'hasFillingData': False,
+                        'tripToken': None,
+                        'vehicleNumber': None,
+                        'ms_arrival_confirmed': False,
+                        'message': 'No ongoing filling found for this trip'
+                    })
 
             # Return existing filling data
+
             return Response({
                 'hasFillingData': True,
-                'tripToken': token_val,
-                'trip': {
-                    'id': trip.id,
-                    'status': trip.status,
-                    'currentStep': trip.current_step,
-                    'stepData': trip.step_data,
-                    'vehicle': {
-                        'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                        'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                    },
-                    'driver': {
-                        'name': trip.driver.full_name if trip.driver else None,
-                    },
-                    'route': {
-                        'from': trip.ms.name if trip.ms else None,
-                        'to': trip.dbs.name if trip.dbs else None,
-                    }
-                },
+                'tripToken': actual_token,
+                'vehicleNumber': vehicle_number,
+                'ms_arrival_confirmed': trip.ms_arrival_confirmed,
+                # 'trip': {
+                #     'id': trip.id,
+                #     'status': trip.status,
+                #     'currentStep': trip.current_step,
+                #     'stepData': trip.step_data,
+                #     'vehicle': {
+                #         'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
+                #         'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
+                #     },
+                #     'driver': {
+                #         'name': trip.driver.full_name if trip.driver else None,
+                #     },
+                #     'route': {
+                #         'from': trip.ms.name if trip.ms else None,
+                #         'to': trip.dbs.name if trip.dbs else None,
+                #     }
+                # },
                 'fillingData': {
                     'id': filling.id,
+                    'trip_id': trip.id,
                     'prefill_pressure_bar': str(filling.prefill_pressure_bar) if filling.prefill_pressure_bar else None,
                     'prefill_mfm': str(filling.prefill_mfm) if filling.prefill_mfm else None,
                     'postfill_pressure_bar': str(filling.postfill_pressure_bar) if filling.postfill_pressure_bar else None,
                     'postfill_mfm': str(filling.postfill_mfm) if filling.postfill_mfm else None,
                     'filled_qty_kg': str(filling.filled_qty_kg) if filling.filled_qty_kg else None,
-                    'prefill_photo_url': filling.prefill_photo.url if filling.prefill_photo else None,
-                    'postfill_photo_url': filling.postfill_photo.url if filling.postfill_photo else None,
+                    'prefill_photo_url': True if filling.prefill_photo_operator else False,
+                    'postfill_photo_url': True if filling.postfill_photo_operator else False,
                     'confirmed_by_ms_operator': filling.confirmed_by_ms_operator_id is not None,
                     'start_time': filling.start_time.isoformat() if filling.start_time else None,
                     'end_time': filling.end_time.isoformat() if filling.end_time else None,
@@ -437,7 +497,7 @@ class MSFillStartView(views.APIView):
         filling.save()
 
         # Update trip status and step tracking
-        trip.status = 'FILLING'
+        # trip.status = 'FILLING'
         if trip.update_step(3):
             trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}
         trip.save()
@@ -543,7 +603,7 @@ class MSFillEndView(views.APIView):
         filling.save()
 
         # Update trip status and step tracking
-        trip.status = 'FILLED'
+        # trip.status = 'FILLED'
         trip.step_data = {**trip.step_data, 'ms_post_reading_done': True}
         trip.save()
 
@@ -645,9 +705,11 @@ class MSStockTransferListView(views.APIView):
         ms = get_object_or_404(Station, id=ms_id, type='MS')
         
         # Fetch Completed Trips (Transfers from this MS)
+        # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
+        # Invalid (not in model): DISPATCHED
         trips = Trip.objects.filter(
             ms=ms,
-            status__in=['COMPLETED', 'DISPATCHED', 'IN_TRANSIT', 'AT_DBS']
+            status__in=['COMPLETED', 'IN_TRANSIT', 'AT_DBS']  # 'DISPATCHED' - not in model STATUS_CHOICES
         ).select_related('ms', 'dbs', 'vehicle').prefetch_related('ms_fillings').order_by('-started_at')
         
         data = []
@@ -875,9 +937,11 @@ class MSPendingArrivalsView(views.APIView):
         
         # Get trips that have arrived at MS (waiting for filling to start)
         # These are trips where driver has clicked "Arrive at MS"
+        # Exclude trips where MS operator has already confirmed
         pending_arrivals = Trip.objects.filter(
             ms=ms,
-            status__in=['AT_MS', 'PENDING']  # AT_MS = arrived, PENDING might also be waiting
+            status__in=['AT_MS', 'PENDING'],  # AT_MS = arrived, PENDING might also be waiting
+            ms_arrival_confirmed=False  # Only show unconfirmed arrivals
         ).filter(
             origin_confirmed_at__isnull=False  # Driver has confirmed arrival
         ).select_related('vehicle', 'driver', 'driver__user', 'token').order_by('-origin_confirmed_at')
