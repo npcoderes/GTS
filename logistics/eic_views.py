@@ -5,6 +5,9 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Q, Count, Avg
+from core.error_response import (
+    validation_error_response, not_found_response, forbidden_response, server_error_response
+)
 from .models import (
     Vehicle, Driver, StockRequest, Token, Trip,
     MSFilling, DBSDecanting, Reconciliation, Alert, Shift
@@ -109,10 +112,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         }
         """
         if not check_eic_permission(request.user):
-            return Response(
-                {'error': 'Permission denied. Only EIC can approve/reject stock requests.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied. Only EIC can approve/reject stock requests.')
         
         stock_request = self.get_object()
         
@@ -124,17 +124,11 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         
         # Validate status value
         if new_status not in ['APPROVED', 'REJECTED']:
-            return Response(
-                {'error': f'Invalid status: {new_status}. Must be APPROVED or REJECTED.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response(f'Invalid status: {new_status}. Must be APPROVED or REJECTED.')
         
         # Validate current status
         if stock_request.status not in ['PENDING', 'QUEUED']:
-            return Response(
-                {'error': f'Cannot modify request with status: {stock_request.status}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response(f'Cannot modify request with status: {stock_request.status}')
         
         try:
             with transaction.atomic():
@@ -145,7 +139,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                         try:
                             driver = Driver.objects.select_related('user', 'assigned_vehicle').get(id=driver_id)
                         except Driver.DoesNotExist:
-                            return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+                            return not_found_response('Driver not found')
                         
                         # Verify driver is available (has active shift and not on trip)
                         now = timezone.now()
@@ -153,9 +147,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                         active_shift = find_active_shift(driver, now)
                         
                         if not active_shift:
-                            return Response({
-                                'error': 'Driver does not have an active shift'
-                            }, status=status.HTTP_400_BAD_REQUEST)
+                            return validation_error_response('Driver does not have an active shift')
                         
                         # Check if driver is on an active trip
                         active_trip = Trip.objects.filter(
@@ -164,9 +156,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                         ).exists()
                         
                         if active_trip:
-                            return Response({
-                                'error': 'Driver is currently on another trip'
-                            }, status=status.HTTP_400_BAD_REQUEST)
+                            return validation_error_response('Driver is currently on another trip')
                         
                         # Check if driver is already assigned to another ASSIGNING stock request
                         pending_assignment = StockRequest.objects.filter(
@@ -175,9 +165,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                         ).exclude(id=stock_request.id).exists()
                         
                         if pending_assignment:
-                            return Response({
-                                'error': 'Driver already has a pending trip offer'
-                            }, status=status.HTTP_400_BAD_REQUEST)
+                            return validation_error_response('Driver already has a pending trip offer')
                         
                         # Update stock request - approve and assign
                         stock_request.status = 'ASSIGNING'
@@ -262,10 +250,7 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                     })
 
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('An error occurred while processing the request')
     
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
@@ -273,19 +258,13 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         Reject a pending stock request
         """
         if not check_eic_permission(request.user):
-            return Response(
-                {'error': 'Permission denied. Only EIC can reject stock requests.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied. Only EIC can reject stock requests.')
         
         stock_request = self.get_object()
         
         # Validate status
         if stock_request.status not in ['PENDING', 'QUEUED']:
-            return Response(
-                {'error': f'Cannot reject request with status: {stock_request.status}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response(f'Cannot reject request with status: {stock_request.status}')
         
         reason = request.data.get('reason', 'No reason provided')
         notes = request.data.get('notes', '')
@@ -311,14 +290,14 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         Get list of available drivers for assignment
         """
         if not check_eic_permission(request.user):
-            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('Permission denied')
             
         stock_request = self.get_object()
         
         # Get parent MS
         ms = stock_request.dbs.parent_station
         if not ms:
-            return Response({'error': 'DBS has no parent MS'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS has no parent MS')
             
         candidates = get_available_drivers(ms.id)
         
@@ -468,10 +447,7 @@ class EICDashboardView(views.APIView):
     """
     def get(self, request):
         if not check_eic_permission(request.user):
-            return Response(
-                {'error': 'Permission denied'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied')
         
         # Count pending stock requests
         pending_stock_requests = StockRequest.objects.filter(status='PENDING').count()
@@ -582,10 +558,7 @@ class EICDriverApprovalView(views.APIView):
     """
     def get(self, request):
         if not check_eic_permission(request.user):
-            return Response(
-                {'error': 'Permission denied'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied')
         
         # Get pending shifts with driver and vehicle details
         pending_shifts = Shift.objects.select_related(
@@ -661,10 +634,7 @@ class EICPermissionsView(views.APIView):
     """
     def get(self, request):
         if not check_eic_permission(request.user):
-            return Response(
-                {'error': 'Permission denied'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied')
         
         # Get user's EIC role assignments
         eic_roles = request.user.user_roles.filter(

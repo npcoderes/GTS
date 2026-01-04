@@ -192,6 +192,13 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# File Upload Settings
+# Increase limits for base64 photo uploads from mobile apps
+# Default is 2.5MB which is too small for high-resolution phone photos
+DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 MB (base64 photos can be large)
+FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 MB
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000    # Default is 1000, keeping same
+
 # CORS Configuration
 CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
 # CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if os.getenv('CORS_ALLOWED_ORIGINS') else []
@@ -216,6 +223,7 @@ CORS_ALLOW_HEADERS = [
     "user-agent",
     "x-csrftoken",
     "x-requested-with",
+    "ngrok-skip-browser-warning",
 ]
 
 # REST Framework Configuration

@@ -213,6 +213,9 @@ class Trip(models.Model):
         """
         Auto-calculate current step based on trip state.
         Used by resume API to ensure accuracy.
+        
+        IMPORTANT: This method uses direct database queries to avoid stale prefetch cache.
+        It is a read-only method and does NOT modify the trip status (no side effects).
 
         Step Mapping:
         0: No trip / Initial state
@@ -224,6 +227,9 @@ class Trip(models.Model):
         6: Decanting confirmed, navigating back to MS (status=DECANTING_CONFIRMED)
         7: Trip completion screen (status=COMPLETED)
         """
+        # Import here to avoid circular imports
+        from .models import MSFilling, DBSDecanting
+        
         # Cancelled trips reset to 0
         if self.status == 'CANCELLED':
             return 0
@@ -237,13 +243,28 @@ class Trip(models.Model):
             return 6
 
         # Check if at DBS or decanting (step 5)
-        if self.status == 'AT_DBS' or self.dbs_decantings.exists():
-            # If decanting confirmed by BOTH operator AND driver, move to step 6
-            if self.dbs_decantings.filter(
-                confirmed_by_dbs_operator__isnull=False,
-                confirmed_by_driver__isnull=False
-            ).exists():
-                return 6
+        # Use direct query to avoid stale prefetch cache
+        dbs_decanting_exists = DBSDecanting.objects.filter(trip_id=self.id).exists()
+        if self.status == 'AT_DBS' or dbs_decanting_exists:
+            dbs_decanting = DBSDecanting.objects.filter(trip_id=self.id).first()
+            
+            if dbs_decanting:
+                # Step 6: Both confirmed AND post-decant photo uploaded = Decanting complete, heading back to MS
+                # Both confirmations mean they've reviewed and approved the post-decant data/photos
+                if (dbs_decanting.confirmed_by_dbs_operator and 
+                    dbs_decanting.confirmed_by_driver and
+                    dbs_decanting.post_decant_photo):
+                    # Update status and save to database
+                    if self.status != 'DECANTING_CONFIRMED':
+                        self.status = 'DECANTING_CONFIRMED'
+                        self.save(update_fields=['status'])
+                    return 6
+                
+                # Step 5: Decanting in progress but not fully confirmed yet
+                # This includes: pre-decant done, decanting happening, or post-decant photo uploaded but not confirmed
+                return 5
+            
+            # Should not reach here if status is AT_DBS but no decanting record
             return 5
 
         # Check if left MS and heading to DBS (step 4)
@@ -251,12 +272,29 @@ class Trip(models.Model):
             return 4
 
         # Check if at MS or filling in progress (step 3)
-        if self.status == 'AT_MS' or self.ms_fillings.exists():
-            # If already left MS, should be step 4
-            if self.ms_departure_at:
-                return 4
-            # If at MS or filling in progress
-            return 3 if self.ms_fillings.exists() else 2
+        # Use direct query to avoid stale prefetch cache
+        ms_filling_exists = MSFilling.objects.filter(trip_id=self.id).exists()
+        if self.status == 'AT_MS' or ms_filling_exists:
+            ms_filling = MSFilling.objects.filter(trip_id=self.id).first()
+            
+            if ms_filling:
+                # Step 4: Both confirmed AND postfill photo uploaded = Filling complete, left MS
+                # Both confirmations mean they've reviewed and approved the postfill data/photos
+                if (ms_filling.confirmed_by_ms_operator and 
+                    ms_filling.confirmed_by_driver and
+                    ms_filling.postfill_photo):
+                    # Update status and save to database
+                    if self.status != 'IN_TRANSIT':
+                        self.status = 'IN_TRANSIT'
+                        self.save(update_fields=['status'])
+                    return 4
+                
+                # Step 3: Filling in progress but not fully confirmed yet
+                # This includes: prefill done, filling happening, or postfill photo uploaded but not confirmed
+                return 3
+            
+            # Step 2: At MS but filling not started yet
+            return 2
 
         # Arrived at MS (step 2)
         if self.origin_confirmed_at:
@@ -298,7 +336,13 @@ class Trip(models.Model):
         """
         Get detailed step information including substep progress.
         Returns comprehensive data for resume functionality.
+        
+        IMPORTANT: This method forces a fresh database query for related objects
+        to avoid stale prefetch cache issues when DBS/MS operators have just saved data.
         """
+        # Force refresh from database to get latest data (avoid stale prefetch cache)
+        from .models import MSFilling, DBSDecanting
+        
         step = self.calculate_current_step()
         details = {
             'current_step': step,
@@ -309,8 +353,9 @@ class Trip(models.Model):
         }
 
         # MS Filling details - include for step 3 and beyond (filling started or completed)
+        # Use direct query to avoid stale prefetch cache
         if step >= 3:
-            ms_filling = self.ms_fillings.first()
+            ms_filling = MSFilling.objects.filter(trip_id=self.id).first()
             if ms_filling:
                 details['ms_filling'] = {
                     'id': ms_filling.id,
@@ -319,8 +364,12 @@ class Trip(models.Model):
                     'postfill_pressure_bar': str(ms_filling.postfill_pressure_bar) if ms_filling.postfill_pressure_bar else None,
                     'postfill_mfm': str(ms_filling.postfill_mfm) if ms_filling.postfill_mfm else None,
                     'filled_qty_kg': str(ms_filling.filled_qty_kg) if ms_filling.filled_qty_kg else None,
+                    # Driver photos
                     'prefill_photo_url': ms_filling.prefill_photo.url if ms_filling.prefill_photo else None,
                     'postfill_photo_url': ms_filling.postfill_photo.url if ms_filling.postfill_photo else None,
+                    # Operator photos
+                    'prefill_photo_operator_url': ms_filling.prefill_photo_operator.url if ms_filling.prefill_photo_operator else None,
+                    'postfill_photo_operator_url': ms_filling.postfill_photo_operator.url if ms_filling.postfill_photo_operator else None,
                     'confirmed_by_ms_operator': ms_filling.confirmed_by_ms_operator_id is not None,
                     'confirmed_by_driver': ms_filling.confirmed_by_driver_id is not None,
                     'start_time': ms_filling.start_time.isoformat() if ms_filling.start_time else None,
@@ -328,8 +377,9 @@ class Trip(models.Model):
                 }
 
         # DBS Decanting details - include for step 5 and beyond (decanting started or completed)
+        # Use direct query to avoid stale prefetch cache
         if step >= 5:
-            dbs_decanting = self.dbs_decantings.first()
+            dbs_decanting = DBSDecanting.objects.filter(trip_id=self.id).first()
             if dbs_decanting:
                 details['dbs_decanting'] = {
                     'id': dbs_decanting.id,
@@ -338,8 +388,12 @@ class Trip(models.Model):
                     'post_dec_pressure_bar': str(dbs_decanting.post_dec_pressure_bar) if dbs_decanting.post_dec_pressure_bar else None,
                     'post_dec_reading': str(dbs_decanting.post_dec_reading) if dbs_decanting.post_dec_reading else None,
                     'delivered_qty_kg': str(dbs_decanting.delivered_qty_kg) if dbs_decanting.delivered_qty_kg else None,
+                    # Driver photos
                     'pre_decant_photo_url': dbs_decanting.pre_decant_photo.url if dbs_decanting.pre_decant_photo else None,
                     'post_decant_photo_url': dbs_decanting.post_decant_photo.url if dbs_decanting.post_decant_photo else None,
+                    # Operator photos
+                    'pre_decant_photo_operator_url': dbs_decanting.pre_decant_photo_operator.url if dbs_decanting.pre_decant_photo_operator else None,
+                    'post_decant_photo_operator_url': dbs_decanting.post_decant_photo_operator.url if dbs_decanting.post_decant_photo_operator else None,
                     'confirmed_by_dbs_operator': dbs_decanting.confirmed_by_dbs_operator_id is not None,
                     'confirmed_by_driver': dbs_decanting.confirmed_by_driver_id is not None,
                     'start_time': dbs_decanting.start_time.isoformat() if dbs_decanting.start_time else None,

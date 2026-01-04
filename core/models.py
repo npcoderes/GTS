@@ -13,14 +13,14 @@ class UserManager(BaseUserManager):
     Custom manager for User model with email as the unique identifier.
     """
     
-    def create_user(self, email, password=None, **extra_fields):
+    def create_user(self, email=None, password=None, **extra_fields):
         """
         Create and return a regular user with an email and password.
+        Email is optional - phone can be used as primary identifier.
         """
-        if not email:
-            raise ValueError('The Email field must be set')
+        if email:
+            email = self.normalize_email(email)
         
-        email = self.normalize_email(email)
         extra_fields.setdefault('is_active', True)
         extra_fields.setdefault('is_staff', False)
         extra_fields.setdefault('is_superuser', False)
@@ -54,6 +54,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     email = models.EmailField(
         unique=True,
+        null=True,
+        blank=True,
         verbose_name='Email Address',
         help_text='User email address (used for login)'
     )

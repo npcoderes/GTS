@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
@@ -26,11 +27,7 @@ def send_welcome_email(user, raw_password):
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <meta http-equiv="X-UA-Compatible" content="IE=edge">
             <title>Welcome to SGL</title>
-            <!--[if mso]>
-            <style type="text/css">
-                body, table, td {font-family: Arial, Helvetica, sans-serif !important;}
-            </style>
-            <![endif]-->
+
         </head>
         <body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;">
             <!-- Wrapper Table for Email Clients -->
@@ -60,7 +57,7 @@ def send_welcome_email(user, raw_password):
                                     </h2>
                                     
                                     <p style="margin: 0 0 15px 0; color: #333333; font-size: 16px; line-height: 1.6;">
-                                        Dear <strong style="color: #0056b3;">{{ user.full_name }}</strong>,
+                                        Dear <strong style="color: #0056b3;">{user.get_full_name() or user.username}</strong>,
                                     </p>
                                     
                                     <p style="margin: 0 0 25px 0; color: #555555; font-size: 15px; line-height: 1.6;">
@@ -81,7 +78,7 @@ def send_welcome_email(user, raw_password):
                                                         </td>
                                                         <td style="width: 65%; vertical-align: top;">
                                                             <p style="margin: 0; font-size: 14px; color: #333333; font-family: 'Courier New', Courier, monospace; background-color: #ffffff; padding: 8px 12px; border-radius: 4px; border: 1px solid #d0d0d0; word-break: break-all;">
-                                                                {{ user.email }}
+                                                                {user.email}
                                                             </p>
                                                         </td>
                                                     </tr>
@@ -97,7 +94,7 @@ def send_welcome_email(user, raw_password):
                                                         </td>
                                                         <td style="width: 65%; vertical-align: top;">
                                                             <p style="margin: 0; font-size: 14px; color: #333333; font-family: 'Courier New', Courier, monospace; background-color: #ffffff; padding: 8px 12px; border-radius: 4px; border: 1px solid #d0d0d0;">
-                                                                {{ user.phone }}
+                                                                {user.phone if hasattr(user, 'phone') and user.phone else 'N/A'}
                                                             </p>
                                                         </td>
                                                     </tr>
@@ -113,7 +110,7 @@ def send_welcome_email(user, raw_password):
                                                         </td>
                                                         <td style="width: 65%; vertical-align: top;">
                                                             <p style="margin: 0; font-size: 14px; color: #333333; font-family: 'Courier New', Courier, monospace; background-color: #ffffff; padding: 8px 12px; border-radius: 4px; border: 1px solid #d0d0d0; word-break: break-all;">
-                                                                {{ raw_password }}
+                                                                {raw_password}
                                                             </p>
                                                         </td>
                                                     </tr>
@@ -134,17 +131,6 @@ def send_welcome_email(user, raw_password):
                                         </tr>
                                     </table>
                                     
-                                    <!-- CTA Button -->
-                                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin: 30px 0;">
-                                        <tr>
-                                            <td style="text-align: center;">
-                                                <a href="{{ login_url }}" style="display: inline-block; background: linear-gradient(135deg, #0056b3 0%, #003d82 100%); color: #ffffff; text-decoration: none; padding: 14px 40px; border-radius: 6px; font-size: 16px; font-weight: 600; box-shadow: 0 3px 8px rgba(0, 86, 179, 0.3);">
-                                                    Login to Your Account
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    </table>
-                                    
                                     <p style="margin: 25px 0 0 0; color: #777777; font-size: 14px; line-height: 1.6;">
                                         If you have any questions or need assistance, please don't hesitate to contact our support team.
                                     </p>
@@ -160,7 +146,7 @@ def send_welcome_email(user, raw_password):
                                     </p>
                                     
                                     <p style="margin: 10px 0 0 0; color: #999999; font-size: 12px; text-align: center; line-height: 1.4;">
-                                        © {{ current_year }} Sabarmati Gas Limited. All rights reserved.<br>
+                                        © {datetime.now().year} Sabarmati Gas Limited. All rights reserved.<br>
                                         This is an automated message. Please do not reply to this email.
                                     </p>
                                 </td>

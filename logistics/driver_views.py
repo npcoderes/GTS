@@ -475,8 +475,8 @@ class DriverTripViewSet(viewsets.ViewSet):
                     if dbs_operator_role and dbs_operator_role.user:
                          notification_service.send_to_user(
                             user=dbs_operator_role.user,
-                            title="Despatch Arrived",
-                            body=f"Truck {trip.vehicle.registration_no} has arrived at {trip.dbs.name}",
+                            title="Truck Arrived",
+                            body=f"Truck {trip.vehicle.registration_no} has arrived at {trip.dbs.name} for decanting.",
                             data={
                                 "type": "dbs_arrival",
                                 "trip_id": str(trip.id),
@@ -520,7 +520,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         """
         driver = getattr(request.user, 'driver_profile', None)
         if not driver:
-            return Response({'error': 'User is not a driver'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('User is not a driver')
 
         # Check if token is provided (from POST body or query params)
         token_val = None
@@ -529,7 +529,9 @@ class DriverTripViewSet(viewsets.ViewSet):
         else:
             token_val = request.query_params.get('token')
 
-        # If token is provided, find trip by token
+        active_trip = None
+        
+        # If token is provided, try to find trip by token first
         if token_val:
             try:
                 active_trip = Trip.objects.filter(
@@ -540,27 +542,24 @@ class DriverTripViewSet(viewsets.ViewSet):
                 ).prefetch_related(
                     'ms_fillings', 'dbs_decantings'
                 ).first()
-                
-                if not active_trip:
-                    return Response({
-                        'hasActiveTrip': False,
-                        'message': 'No trip found for this token'
-                    }, status=status.HTTP_404_NOT_FOUND)
-                    
             except Exception as e:
-                return validation_error_response(f'Error finding trip: {str(e)}')
-        else:
-            # No token provided - find any active trip for this driver (original behavior)
-            # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
-            # Invalid (commented): FILLING, FILLED, DISPATCHED
+                # Log error but continue to fallback
+                import logging
+                logging.getLogger(__name__).warning(f'Error finding trip by token: {str(e)}')
+
+        # Fallback: No token provided OR token didn't find a trip - find any active trip for this driver
+        if not active_trip:
+            # Active statuses = all except COMPLETED and CANCELLED
+            active_statuses = ['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']
+            
             active_trip = Trip.objects.filter(
                 driver=driver,
-                status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']  # 'FILLING', 'FILLED', 'DISPATCHED' - not in model STATUS_CHOICES
+                status__in=active_statuses
             ).select_related(
                 'token', 'vehicle', 'ms', 'dbs', 'stock_request'
             ).prefetch_related(
                 'ms_fillings', 'dbs_decantings'
-            ).first()
+            ).order_by('-started_at').first()  # Get most recent active trip
 
             if not active_trip:
                 return Response({
@@ -568,7 +567,14 @@ class DriverTripViewSet(viewsets.ViewSet):
                     'message': 'No active trip found'
                 })
 
+        # IMPORTANT: Refresh trip from database to get latest state
+        # This ensures we don't return stale data if DBS/MS operator just saved changes
+        # The prefetch cache may contain stale related objects, so we refresh the trip itself
+        # and let get_step_details() use direct queries for related objects
+        active_trip.refresh_from_db()
+        
         # Calculate current step and get detailed information
+        # Note: get_step_details() now uses direct queries to avoid stale prefetch cache
         step_details = active_trip.get_step_details()
 
         # Build comprehensive response
@@ -658,84 +664,98 @@ class DriverTripViewSet(viewsets.ViewSet):
             
             if station_type == 'MS':
                 # Ensure MSFilling record exists
-                filling, _ = MSFilling.objects.get_or_create(trip=trip)
+                # Use select_for_update to lock the row and get fresh data
+                # This prevents race conditions where MS operator confirms after driver fetches stale data
+                with transaction.atomic():
+                    filling, created = MSFilling.objects.select_for_update().get_or_create(trip=trip)
+                    
+                    # If not newly created, refresh to get latest data (in case MS operator just confirmed)
+                    if not created:
+                        filling.refresh_from_db()
 
-                if reading_type == 'pre':
-                    # filling.prefill_pressure_bar = reading_val
-                    # filling.start_time = timezone.now()
-                    if photo_file:
-                        filling.prefill_photo = photo_file
-                    # Update step tracking
-                    # trip.status = 'FILLING'
-                    if trip.update_step(3):
-                        trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
-                    trip.save()
-                elif reading_type == 'post':
-                    # filling.postfill_pressure_bar = reading_val
-                    # filling.end_time = timezone.now()
-                    if photo_file:
-                       filling.postfill_photo = photo_file
-                    # Update step tracking
-                    trip.step_data = {**trip.step_data, 'ms_post_reading_done': True, 'ms_post_photo_uploaded': bool(photo_file)}
+                    if reading_type == 'pre':
+                        # filling.prefill_pressure_bar = reading_val
+                        # filling.start_time = timezone.now()
+                        if photo_file:
+                            filling.prefill_photo = photo_file
+                        # Update step tracking
+                        # trip.status = 'FILLING'
+                        if trip.update_step(3):
+                            trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
+                        trip.save()
+                    elif reading_type == 'post':
+                        # filling.postfill_pressure_bar = reading_val
+                        # filling.end_time = timezone.now()
+                        if photo_file:
+                            filling.postfill_photo = photo_file
+                        # Update step tracking
+                        trip.step_data = {**trip.step_data, 'ms_post_reading_done': True, 'ms_post_photo_uploaded': bool(photo_file)}
 
-                    if request.data.get('confirmed'):
-                        filling.confirmed_by_driver = request.user
-                        # Check if MS operator has also confirmed
-                        if filling.confirmed_by_ms_operator:
-                            # Both confirmed - proceed to next step
-                            trip.status = 'IN_TRANSIT'  # Valid status - driver departing MS to DBS
-                            trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
-                            trip.ms_departure_at = timezone.now()
-                            if trip.update_step(4):
-                                trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+                        if request.data.get('confirmed'):
+                            filling.confirmed_by_driver = request.user
+                            # Check if MS operator has also confirmed (fresh data from select_for_update)
+                            if filling.confirmed_by_ms_operator:
+                                # Both confirmed - proceed to next step
+                                trip.status = 'IN_TRANSIT'  # Valid status - driver departing MS to DBS
+                                trip.sto_number = f"STO-{trip.ms.code}-{trip.dbs.code}-{trip.id}-{timezone.now().strftime('%Y%m%d%H%M')}"
+                                trip.ms_departure_at = timezone.now()
+                                if trip.update_step(4):
+                                    trip.step_data = {**trip.step_data, 'ms_filling_confirmed': True}
+                            else:
+                                # Driver confirmed but waiting for operator
+                                # Status stays AT_MS until operator confirms
+                                pass
                         else:
-                            # Driver confirmed but waiting for operator
-                            # Status stays AT_MS until operator confirms
+                            # Post-reading done but not confirmed yet
+                            # Status stays AT_MS
                             pass
-                    else:
-                        # Post-reading done but not confirmed yet
-                        # Status stays AT_MS
-                        pass
-                    trip.save()
-                filling.save()
+                        trip.save()
+                    filling.save()
                 
             elif station_type == 'DBS':
                 # Ensure DBSDecanting record exists
-                decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+                # Use select_for_update to lock the row and get fresh data
+                # This prevents race conditions where DBS operator confirms after driver fetches stale data
+                with transaction.atomic():
+                    decanting, created = DBSDecanting.objects.select_for_update().get_or_create(trip=trip)
+                    
+                    # If not newly created, refresh to get latest data (in case DBS operator just confirmed)
+                    if not created:
+                        decanting.refresh_from_db()
 
-                if reading_type == 'pre':
-                    # decanting.pre_dec_reading = reading_val
-                    # decanting.start_time = timezone.now()
-                    if photo_file:
-                        decanting.pre_decant_photo = photo_file
+                    if reading_type == 'pre':
+                        # decanting.pre_dec_reading = reading_val
+                        # decanting.start_time = timezone.now()
+                        if photo_file:
+                            decanting.pre_decant_photo = photo_file
 
-                    trip.status = 'AT_DBS'
-                    trip.dbs_arrival_at = timezone.now()
-                    if trip.update_step(5):
-                        trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'dbs_pre_photo_uploaded': bool(photo_file)}
-                    trip.save()
-                elif reading_type == 'post':
-                    # decanting.post_dec_reading = reading_val
-                    # decanting.end_time = timezone.now()
-                    if photo_file:
-                        decanting.post_decant_photo = photo_file
-                    # Update step tracking
-                    trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True, 'dbs_post_photo_uploaded': bool(photo_file)}
+                        # trip.status = 'AT_DBS'
+                        trip.dbs_arrival_at = timezone.now()
+                        if trip.update_step(5):
+                            trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'dbs_pre_photo_uploaded': bool(photo_file)}
+                        trip.save()
+                    elif reading_type == 'post':
+                        # decanting.post_dec_reading = reading_val
+                        # decanting.end_time = timezone.now()
+                        if photo_file:
+                            decanting.post_decant_photo = photo_file
+                        # Update step tracking
+                        trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True, 'dbs_post_photo_uploaded': bool(photo_file)}
 
-                    if request.data.get('confirmed'):
-                        decanting.confirmed_by_driver = request.user
-                        # Check if DBS operator has also confirmed
-                        if decanting.confirmed_by_dbs_operator:
-                            # Both confirmed - proceed to next step
-                            if trip.stock_request:
-                                trip.stock_request.status = 'COMPLETED'
-                                trip.stock_request.save()
-                            trip.status = 'DECANTING_CONFIRMED'
+                        if request.data.get('confirmed'):
+                            decanting.confirmed_by_driver = request.user
+                            # Check if DBS operator has also confirmed (fresh data from select_for_update)
+                            if decanting.confirmed_by_dbs_operator:
+                                # Both confirmed - proceed to next step
+                                if trip.stock_request:
+                                    trip.stock_request.status = 'COMPLETED'
+                                    trip.stock_request.save()
+                                trip.status = 'DECANTING_CONFIRMED'
+                                if trip.update_step(6):
+                                    trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
                             trip.dbs_departure_at = timezone.now()
-                            if trip.update_step(6):
-                                trip.step_data = {**trip.step_data, 'dbs_decanting_confirmed': True}
-                    trip.save()
-                decanting.save()
+                        trip.save()
+                    decanting.save()
                 
             return Response({"success": True})
             

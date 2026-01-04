@@ -1,0 +1,225 @@
+/* Basic Logo Style - color handled by JS config now */
+.logo {
+  margin: 16px;
+  border-radius: 8px;
+  transition: all 0.3s ease;
+}
+
+/* Ensure sidebar menu is scrollable */
+.ant-layout-sider {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+/* Hide default Ant Menu border */
+.ant-menu {
+  border-right: 0 !important;
+}
+
+.dashboard-header {
+  padding: 0 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 64px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.user-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.3;
+}
+
+/* Content wrapper */
+.content-wrapper {
+  width: 100%;
+}
+
+/* ===== RESPONSIVE DASHBOARD LAYOUT ===== */
+
+/* Tablet Landscape (992px - 1199px) */
+@media (max-width: 1199px) {
+  .dashboard-header {
+    padding: 0 20px;
+  }
+  
+  .content-wrapper {
+    padding: 0;
+  }
+  
+  .header-right {
+    gap: 12px;
+  }
+}
+
+/* Tablet Portrait (768px - 991px) */
+@media (max-width: 991px) {
+  .dashboard-header {
+    padding: 0 16px;
+  }
+  
+  .header-right {
+    gap: 10px;
+  }
+  
+  .user-profile {
+    gap: 8px;
+  }
+  
+  .user-email {
+    display: none;
+  }
+  
+  .user-name {
+    font-size: 13px !important;
+  }
+  
+  /* Sidebar overlay when open on mobile */
+  .custom-sider:not(.ant-layout-sider-collapsed) {
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+  }
+}
+
+/* Mobile Landscape (576px - 767px) */
+@media (max-width: 767px) {
+  .dashboard-header {
+    padding: 0 12px;
+    height: 56px;
+  }
+  
+  .header-right {
+    gap: 8px;
+  }
+  
+  .user-profile {
+    gap: 6px;
+    padding: 4px 6px !important;
+  }
+  
+  .user-info {
+    display: none;
+  }
+  
+  .logo {
+    margin: 12px;
+  }
+}
+
+/* Mobile Portrait (up to 575px) */
+@media (max-width: 575px) {
+  .dashboard-header {
+    padding: 0 8px;
+    height: 52px;
+  }
+  
+  .header-left .ant-btn {
+    width: 40px !important;
+    height: 40px !important;
+    font-size: 16px !important;
+  }
+  
+  .header-right {
+    gap: 6px;
+  }
+  
+  .header-right .ant-btn {
+    width: 36px !important;
+    height: 36px !important;
+    font-size: 16px !important;
+  }
+  
+  .user-profile {
+    padding: 2px 4px !important;
+  }
+  
+  .user-profile .ant-avatar {
+    width: 32px !important;
+    height: 32px !important;
+    font-size: 14px !important;
+  }
+  
+  .logo {
+    margin: 10px;
+    height: 52px !important;
+  }
+  
+  .logo .ant-typography {
+    font-size: 16px !important;
+  }
+}
+
+/* ===== MOBILE DRAWER STYLES ===== */
+.mobile-sidebar-drawer .ant-drawer-body {
+  padding: 0 !important;
+}
+
+.mobile-sidebar-drawer .ant-menu {
+  border-right: none !important;
+}
+
+.mobile-sidebar-drawer .ant-menu-item {
+  margin: 4px 8px !important;
+  border-radius: 8px !important;
+  height: 44px !important;
+  line-height: 44px !important;
+}
+
+.mobile-sidebar-drawer .ant-menu-item-icon {
+  font-size: 18px !important;
+}
+
+.mobile-sidebar-drawer .ant-menu-title-content {
+  font-size: 15px !important;
+}
+
+/* Overlay backdrop for mobile */
+.ant-drawer-mask {
+  background: rgba(0, 0, 0, 0.45) !important;
+}
+
+/* Animation for drawer */
+.ant-drawer-content-wrapper {
+  transition: transform 0.25s ease-out !important;
+}
+
+/* ===== DASHBOARD CONTENT RESPONSIVE ===== */
+.dashboard-content {
+  transition: padding 0.2s ease;
+}
+
+@media (max-width: 991px) {
+  .dashboard-content {
+    padding: 16px !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .dashboard-content {
+    padding: 12px !important;
+  }
+}
+
+@media (max-width: 575px) {
+  .dashboard-content {
+    padding: 8px !important;
+  }
+}

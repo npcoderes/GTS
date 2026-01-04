@@ -1,0 +1,94 @@
+.role-management {
+  width: 100%;
+  padding: 24px;
+  min-height: 100vh;
+}
+
+.role-management .ant-card {
+  border-radius: 12px;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px 0 rgba(0, 0, 0, 0.02);
+  border: 1px solid #e8eaed;
+}
+
+.role-management .ant-table-thead > tr > th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #1F2937;
+  border-bottom: 2px solid #e9ecef;
+}
+
+/* Header section */
+.role-management-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.role-management-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Table container */
+.role-table-container {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ===== RESPONSIVE STYLES ===== */
+
+/* Tablet (768px - 991px) */
+@media (max-width: 991px) {
+  .role-management {
+    padding: 16px;
+  }
+  
+  .role-management-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .role-management-actions {
+    justify-content: flex-start;
+  }
+}
+
+/* Mobile Landscape (576px - 767px) */
+@media (max-width: 767px) {
+  .role-management {
+    padding: 12px;
+  }
+  
+  .role-management .ant-card {
+    border-radius: 10px;
+  }
+  
+  .role-management-actions .ant-btn span:not(.anticon) {
+    display: none;
+  }
+}
+
+/* Mobile Portrait (up to 575px) */
+@media (max-width: 575px) {
+  .role-management {
+    padding: 8px;
+    min-height: auto;
+  }
+  
+  .role-management .ant-card {
+    border-radius: 8px;
+  }
+  
+  .role-management-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  
+  .role-management-actions .ant-btn {
+    flex: 1;
+  }
+}

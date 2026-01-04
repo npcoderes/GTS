@@ -20,6 +20,7 @@ from .permission_serializers import (
     RoleWithPermissionsSerializer
 )
 from .models import Role, User
+from .error_response import validation_error_response, not_found_response
 
 
 def snake_to_camel(snake_str):
@@ -247,12 +248,12 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
         permissions_data = request.data.get('permissions', {})
         
         if not role_id:
-            return Response({'error': 'role_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('role_id is required')
         
         try:
             role = Role.objects.get(id=role_id)
         except Role.DoesNotExist:
-            return Response({'error': 'Role not found'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Role not found')
         
         updated = []
         created = []
@@ -334,12 +335,12 @@ class UserPermissionViewSet(viewsets.ModelViewSet):
         permissions_data = request.data.get('permissions', {})
         
         if not user_id:
-            return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('user_id is required')
         
         try:
             target_user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('User not found')
         
         updated = []
         created = []

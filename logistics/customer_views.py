@@ -7,6 +7,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from core.models import Station
+from core.error_response import (
+    validation_error_response, forbidden_response
+)
 from .models import Trip
 
 
@@ -54,7 +57,7 @@ class CustomerDashboardView(views.APIView):
     def get(self, request):
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
 
         relevant_statuses = [
             'DISPATCHED', 'IN_TRANSIT', 'ARRIVED_AT_DBS', 'AT_DBS',
@@ -126,7 +129,7 @@ class CustomerStocksView(views.APIView):
     def get(self, request):
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
         capacity = dbs.capacity_kg or 0
         current_stock = dbs.current_stock_kg or 0
         percentage = float(current_stock) / float(capacity) * 100 if capacity else 0
@@ -151,7 +154,7 @@ class CustomerStocksView(views.APIView):
     def post(self, request):
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
         current_stock = request.data.get('currentStock')
         capacity = request.data.get('capacity')
 
@@ -161,14 +164,14 @@ class CustomerStocksView(views.APIView):
                 dbs.current_stock_kg = Decimal(str(current_stock))
                 updated = True
             except Exception:
-                return Response({'error': 'Invalid currentStock value'}, status=status.HTTP_400_BAD_REQUEST)
+                return validation_error_response('Invalid currentStock value')
 
         if capacity is not None:
             try:
                 dbs.capacity_kg = Decimal(str(capacity))
                 updated = True
             except Exception:
-                return Response({'error': 'Invalid capacity value'}, status=status.HTTP_400_BAD_REQUEST)
+                return validation_error_response('Invalid capacity value')
 
         if updated:
             dbs.stock_updated_at = timezone.now()
@@ -184,7 +187,7 @@ class CustomerTransportView(views.APIView):
     def get(self, request):
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
         trips = Trip.objects.select_related('ms', 'dbs', 'vehicle', 'driver').filter(dbs=dbs).exclude(status__in=['COMPLETED', 'CANCELLED']).order_by('-created_at')[:30]
 
         transports = []
@@ -224,7 +227,7 @@ class CustomerTransfersView(views.APIView):
         
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
         
         # Parse date filters from query params
         start_date_str = request.query_params.get('startDate')
@@ -285,7 +288,7 @@ class CustomerPendingTripsView(views.APIView):
     def get(self, request):
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
         trips = Trip.objects.select_related('ms', 'dbs', 'vehicle').filter(dbs=dbs, status__in=['PENDING', 'AT_MS']).order_by('created_at')
 
         payload = []
@@ -317,11 +320,11 @@ class CustomerTripAcceptView(views.APIView):
     def post(self, request, trip_id):
         dbs = _get_user_dbs_station(request)
         if not dbs:
-            return Response({'error': 'DBS not found for user'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('DBS not found for user')
 
         trip = get_object_or_404(Trip, id=trip_id)
         if trip.dbs and trip.dbs != dbs:
-            return Response({'error': 'Trip does not belong to your DBS'}, status=status.HTTP_403_FORBIDDEN)
+            return forbidden_response('Trip does not belong to your DBS')
 
         trip.status = trip.status or 'IN_TRANSIT'
         if trip.status == 'PENDING':

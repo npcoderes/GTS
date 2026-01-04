@@ -1,0 +1,1428 @@
+/* Corporate Clean Theme for GTS Dashboard */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #F3F4F6;
+  transition: background 0.3s ease;
+}
+
+/* Dark Mode Body */
+body.theme-dark {
+  background: #111827;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Ant Design Overrides for Corporate Clean Theme */
+.ant-layout {
+  min-height: 100vh;
+  background: #F3F4F6 !important;
+  transition: background 0.3s ease;
+}
+
+.theme-dark .ant-layout {
+  background: #111827 !important;
+}
+
+.ant-layout-sider {
+  background: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%) !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.08);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+  border-right: 1px solid #E5E7EB;
+}
+
+.theme-dark .ant-layout-sider {
+  background: linear-gradient(180deg, #1F2937 0%, #111827 100%) !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.4);
+  border-right: 1px solid #374151;
+}
+
+.ant-layout-header {
+  background: #FFFFFF !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid #e8e8e8;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.theme-dark .ant-layout-header {
+  background: #1F2937 !important;
+  border-bottom: 1px solid #374151;
+}
+
+.ant-layout-content {
+  background: #F3F4F6 !important;
+  transition: background 0.3s ease;
+}
+
+.theme-dark .ant-layout-content {
+  background: #111827 !important;
+}
+
+/* Menu Styling */
+.ant-menu {
+  background: transparent !important;
+  border: none !important;
+}
+
+.ant-menu-light .ant-menu-item {
+  color: #4B5563 !important;
+  margin: 4px 8px;
+  width: calc(100% - 16px);
+  border-radius: 8px;
+  transition: all 0.3s ease;
+}
+
+.ant-menu-light .ant-menu-item-selected {
+  background: rgba(37, 99, 235, 0.1) !important;
+  color: #2563EB !important;
+  border-radius: 8px;
+}
+
+.ant-menu-light .ant-menu-item:hover {
+  background: rgba(37, 99, 235, 0.05) !important;
+  color: #2563EB !important;
+}
+
+.theme-dark .ant-menu-light .ant-menu-item {
+  color: #D1D5DB !important;
+}
+
+.theme-dark .ant-menu-light .ant-menu-item-selected {
+  background: rgba(37, 99, 235, 0.2) !important;
+  color: #60A5FA !important;
+}
+
+.theme-dark .ant-menu-light .ant-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #F9FAFB !important;
+}
+
+/* Card Styling */
+.ant-card {
+  border-radius: 12px !important;
+  border: none !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06) !important;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+
+.theme-dark .ant-card {
+  background: #1F2937 !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+.ant-card-head {
+  border-bottom: 1px solid #f0f0f0 !important;
+  padding: 16px 24px !important;
+  transition: border-color 0.3s ease;
+}
+
+.theme-dark .ant-card-head {
+  border-bottom: 1px solid #374151 !important;
+  background: transparent !important;
+}
+
+.ant-card-head-title {
+  font-weight: 600 !important;
+  font-size: 16px !important;
+  color: #1F2937 !important;
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-card-head-title {
+  color: #F9FAFB !important;
+}
+
+.ant-card-body {
+  transition: background 0.3s ease;
+}
+
+.theme-dark .ant-card-body {
+  background: #1F2937 !important;
+  color: #F9FAFB;
+}
+
+/* Table Styling */
+/* Table wrapper and container for proper rounded corners */
+.ant-table-wrapper {
+  border-radius: 12px !important;
+  background: #FFFFFF !important;
+}
+
+.theme-dark .ant-table-wrapper {
+  background: #1F2937 !important;
+}
+
+.ant-table-container {
+  border-radius: 12px !important;
+  background: transparent !important;
+}
+
+.ant-table {
+  background: #ffffff !important;
+  border-radius: 12px !important;
+  transition: background 0.3s ease;
+}
+
+.theme-dark .ant-table {
+  background: #1F2937 !important;
+}
+
+/* First and last header cells for rounded top corners */
+.ant-table-thead > tr:first-child > th:first-child {
+  border-top-left-radius: 12px !important;
+}
+
+.ant-table-thead > tr:first-child > th:last-child {
+  border-top-right-radius: 12px !important;
+}
+
+/* Last row cells for rounded bottom corners */
+.ant-table-tbody > tr:last-child > td:first-child {
+  border-bottom-left-radius: 12px !important;
+}
+
+.ant-table-tbody > tr:last-child > td:last-child {
+  border-bottom-right-radius: 12px !important;
+}
+
+.ant-table-thead>tr>th {
+  background: #fafbfc !important;
+  font-weight: 600 !important;
+  color: #6B7280 !important;
+  border-bottom: 2px solid #f0f0f0 !important;
+  transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+.theme-dark .ant-table-thead>tr>th {
+  background: #111827 !important;
+  color: #9CA3AF !important;
+  border-bottom: 2px solid #374151 !important;
+}
+
+.ant-table-tbody>tr:hover>td {
+  background: #f9f9fb !important;
+}
+
+.theme-dark .ant-table-tbody>tr:hover>td {
+  background: #374151 !important;
+}
+
+.ant-table-tbody>tr>td {
+  border-bottom: 1px solid #f5f5f5 !important;
+  color: #1F2937 !important;
+  transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+.theme-dark .ant-table-tbody>tr>td {
+  border-bottom: 1px solid #374151 !important;
+  color: #F9FAFB !important;
+  background: #1F2937 !important;
+}
+
+.ant-table-cell {
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.theme-dark .ant-table-cell {
+  color: #F9FAFB !important;
+}
+
+/* Button Styling */
+.ant-btn-primary {
+  background: #2563EB !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35) !important;
+  border-radius: 8px !important;
+  height: 40px !important;
+  font-weight: 500 !important;
+  transition: all 0.3s ease !important;
+}
+
+.ant-btn-primary:hover {
+  background: #1d4ed8 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.45) !important;
+}
+
+.ant-btn-default {
+  border-radius: 8px !important;
+  border-color: #e0e0e0 !important;
+}
+
+/* Tag Styling */
+.ant-tag {
+  border-radius: 6px !important;
+  padding: 2px 10px !important;
+  font-weight: 500 !important;
+}
+
+/* Input Styling */
+.ant-input,
+.ant-select-selector,
+.ant-picker {
+  border-radius: 8px !important;
+  border-color: #e0e0e0 !important;
+  transition: background 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
+
+.theme-dark .ant-input,
+.theme-dark .ant-select-selector,
+.theme-dark .ant-picker {
+  background: #374151 !important;
+  border-color: #4B5563 !important;
+  color: #F9FAFB !important;
+}
+
+.theme-dark .ant-select-selection-item,
+.theme-dark .ant-select-selection-placeholder {
+  color: #F9FAFB !important;
+}
+
+.ant-input:focus,
+.ant-input:hover,
+.ant-select-selector:hover,
+.ant-picker:hover {
+  border-color: #2563EB !important;
+}
+
+.ant-input:focus,
+.ant-select-focused .ant-select-selector,
+.ant-picker-focused {
+  border-color: #2563EB !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2) !important;
+}
+
+/* Modal Styling */
+.ant-modal-content {
+  border-radius: 16px !important;
+}
+
+.theme-dark .ant-modal-content {
+  background: #1F2937 !important;
+}
+
+.ant-modal-header {
+  padding: 20px 24px !important;
+  border-bottom: 1px solid #f0f0f0 !important;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.theme-dark .ant-modal-header {
+  background: #1F2937 !important;
+  border-bottom: 1px solid #374151 !important;
+}
+
+.ant-modal-title {
+  font-weight: 600 !important;
+  font-size: 18px !important;
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-modal-title {
+  color: #F9FAFB !important;
+}
+
+.ant-modal-footer {
+  padding: 16px 24px !important;
+  border-top: 1px solid #f0f0f0 !important;
+  background: #fafbfc !important;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.theme-dark .ant-modal-footer {
+  background: #111827 !important;
+  border-top: 1px solid #374151 !important;
+}
+
+.ant-modal-body {
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-modal-body {
+  color: #F9FAFB !important;
+}
+
+/* Form Styling */
+.ant-form-item-label>label {
+  font-weight: 500 !important;
+  color: #1F2937 !important;
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-form-item-label>label {
+  color: #F9FAFB !important;
+}
+
+/* Statistic Styling */
+.ant-statistic-title {
+  color: #6B7280 !important;
+  font-size: 14px !important;
+  margin-bottom: 8px !important;
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-statistic-title {
+  color: #9CA3AF !important;
+}
+
+.ant-statistic-content {
+  font-weight: 700 !important;
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-statistic-content {
+  color: #F9FAFB !important;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F3F4F6;
+  border-radius: 4px;
+}
+
+.theme-dark ::-webkit-scrollbar-track {
+  background: #1F2937;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c0c0c0;
+  border-radius: 4px;
+}
+
+.theme-dark ::-webkit-scrollbar-thumb {
+  background: #4B5563;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+
+.theme-dark ::-webkit-scrollbar-thumb:hover {
+  background: #6B7280;
+}
+
+/* Page Titles */
+h1,
+h2,
+h3,
+h4 {
+  color: #1F2937;
+  transition: color 0.3s ease;
+}
+
+.theme-dark h1,
+.theme-dark h2,
+.theme-dark h3,
+.theme-dark h4 {
+  color: #F9FAFB;
+}
+
+/* Typography */
+.theme-dark .ant-typography {
+  color: #F9FAFB;
+}
+
+/* Selection Color */
+::selection {
+  background: rgba(37, 99, 235, 0.3);
+}
+
+/* Loading Spinner */
+.ant-spin-dot-item {
+  background-color: #2563EB !important;
+}
+
+/* Pagination */
+.ant-pagination {
+  transition: background 0.3s ease;
+}
+
+.theme-dark .ant-pagination {
+  background: transparent !important;
+}
+
+.ant-pagination-item {
+  background: #FFFFFF !important;
+  border: 1px solid #D1D5DB !important;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.ant-pagination-item a {
+  color: #374151 !important;
+}
+
+.theme-dark .ant-pagination-item {
+  background: #374151 !important;
+  border-color: #4B5563 !important;
+}
+
+.theme-dark .ant-pagination-item a {
+  color: #F9FAFB !important;
+}
+
+.ant-pagination-item-active {
+  background: #2563EB !important;
+  border-color: #2563EB !important;
+}
+
+.ant-pagination-item-active a {
+  color: #fff !important;
+}
+
+.theme-dark .ant-pagination-item-active {
+  background: #3B82F6 !important;
+  border-color: #3B82F6 !important;
+}
+
+/* Pagination prev/next buttons */
+.ant-pagination-prev button,
+.ant-pagination-next button {
+  background: #FFFFFF !important;
+  border: 1px solid #D1D5DB !important;
+  color: #374151 !important;
+}
+
+.theme-dark .ant-pagination-prev button,
+.theme-dark .ant-pagination-next button {
+  background: #374151 !important;
+  border-color: #4B5563 !important;
+  color: #F9FAFB !important;
+}
+
+/* Pagination disabled state */
+.ant-pagination-disabled button {
+  background: #F3F4F6 !important;
+  color: #9CA3AF !important;
+}
+
+.theme-dark .ant-pagination-disabled button {
+  background: #1F2937 !important;
+  color: #6B7280 !important;
+}
+
+/* Table pagination wrapper */
+.ant-table-pagination {
+  background: #FFFFFF !important;
+  padding: 16px !important;
+  border-top: 1px solid #F0F0F0 !important;
+  border-bottom-left-radius: 12px !important;
+  border-bottom-right-radius: 12px !important;
+}
+
+.theme-dark .ant-table-pagination {
+  background: #1F2937 !important;
+  border-top: 1px solid #374151 !important;
+}
+
+/* Pagination wrapper inside table */
+.ant-table-wrapper .ant-pagination {
+  background: transparent !important;
+}
+
+.theme-dark .ant-table-wrapper .ant-pagination {
+  background: transparent !important;
+}
+
+/* Breadcrumb */
+.ant-breadcrumb {
+  font-size: 14px !important;
+  transition: color 0.3s ease;
+}
+
+.theme-dark .ant-breadcrumb {
+  color: #9CA3AF !important;
+}
+
+.theme-dark .ant-breadcrumb a {
+  color: #60A5FA !important;
+}
+
+/* Dropdown */
+.ant-dropdown-menu {
+  border-radius: 8px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
+  transition: background 0.3s ease;
+}
+
+.theme-dark .ant-dropdown-menu {
+  background: #1F2937 !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5) !important;
+}
+
+.theme-dark .ant-dropdown-menu-item {
+  color: #F9FAFB !important;
+}
+
+.theme-dark .ant-dropdown-menu-item:hover {
+  background: #374151 !important;
+}
+
+/* Divider */
+.ant-divider {
+  transition: border-color 0.3s ease;
+}
+
+.theme-dark .ant-divider {
+  border-color: #374151 !important;
+}
+
+/* Collapse */
+.ant-collapse {
+  border-radius: 12px !important;
+  border: 1px solid #f0f0f0 !important;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.theme-dark .ant-collapse {
+  background: #1F2937 !important;
+  border-color: #374151 !important;
+}
+
+.ant-collapse-item {
+  border-bottom: 1px solid #f0f0f0 !important;
+}
+
+.theme-dark .ant-collapse-item {
+  border-bottom: 1px solid #374151 !important;
+}
+
+/* Tooltip */
+.ant-tooltip-inner {
+  border-radius: 6px !important;
+}
+
+/* Alert */
+.ant-alert {
+  border-radius: 8px !important;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.theme-dark .ant-alert {
+  background: #1F2937 !important;
+  border-color: #374151 !important;
+  color: #F9FAFB !important;
+}
+
+/* Tabs */
+.ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #2563EB !important;
+}
+
+.ant-tabs-ink-bar {
+  background: #2563EB !important;
+}
+
+.theme-dark .ant-tabs-tab {
+  color: #9CA3AF !important;
+}
+
+.theme-dark .ant-tabs-tab:hover {
+  color: #60A5FA !important;
+}
+
+/* Progress */
+.ant-progress-bg {
+  background: #2563EB !important;
+}
+
+/* Radio Button */
+.ant-radio-button-wrapper-checked {
+  background: #2563EB !important;
+  border-color: #2563EB !important;
+}
+
+/* Switch */
+.ant-switch-checked {
+  background: #2563EB !important;
+}
+
+/* Badge */
+.ant-badge-status-processing {
+  background-color: #2563EB !important;
+}
+
+/* Select Dropdown */
+.theme-dark .ant-select-dropdown {
+  background: #1F2937 !important;
+}
+
+.theme-dark .ant-select-item {
+  color: #F9FAFB !important;
+}
+
+.theme-dark .ant-select-item-option-selected {
+  background: #374151 !important;
+}
+
+.theme-dark .ant-select-item-option:hover {
+  background: #374151 !important;
+}
+
+/* Empty State */
+.theme-dark .ant-empty-description {
+  color: #9CA3AF !important;
+}
+
+/* Custom Classes */
+.page-container {
+  padding: 24px;
+  background: #F3F4F6;
+  min-height: calc(100vh - 64px);
+  transition: background 0.3s ease;
+}
+
+.theme-dark .page-container {
+  background: #111827;
+}
+
+.card-shadow {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06) !important;
+}
+
+.gradient-button {
+  background: #2563EB !important;
+  border: none !important;
+}
+
+.gradient-text {
+  background: #2563EB;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ===== RESPONSIVE DESIGN - ALL BREAKPOINTS ===== */
+
+/* Desktop Large (1400px+) */
+@media (min-width: 1400px) {
+  .content-wrapper {
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+}
+
+/* Desktop (1200px - 1399px) */
+@media (max-width: 1399px) {
+  .content-wrapper {
+    max-width: 100%;
+  }
+}
+
+/* Tablet Landscape / Small Desktop (992px - 1199px) */
+@media (max-width: 1199px) {
+  .dashboard-content {
+    padding: 20px !important;
+  }
+  
+  .ant-card-body {
+    padding: 20px !important;
+  }
+  
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    padding: 12px 12px !important;
+    font-size: 13px !important;
+  }
+}
+
+/* Tablet Portrait (768px - 991px) */
+@media (max-width: 991px) {
+  /* Sidebar adjustments */
+  .ant-layout-sider {
+    position: fixed !important;
+    z-index: 1001 !important;
+  }
+  
+  .ant-layout-sider-collapsed {
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: 0 !important;
+    flex: 0 0 0 !important;
+  }
+  
+  /* Main layout */
+  .ant-layout {
+    margin-left: 0 !important;
+  }
+  
+  .dashboard-content {
+    padding: 16px !important;
+  }
+  
+  /* Cards */
+  .ant-card {
+    margin-bottom: 16px !important;
+  }
+  
+  .ant-card-body {
+    padding: 16px !important;
+  }
+  
+  .ant-card-head {
+    padding: 12px 16px !important;
+  }
+  
+  /* Statistics */
+  .ant-statistic-title {
+    font-size: 12px !important;
+  }
+  
+  .ant-statistic-content-value {
+    font-size: 24px !important;
+  }
+  
+  /* Tables */
+  .ant-table-wrapper {
+    overflow-x: auto !important;
+  }
+  
+  .ant-table {
+    min-width: 600px !important;
+  }
+  
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    padding: 10px 8px !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+  }
+  
+  /* Form */
+  .ant-form-item {
+    margin-bottom: 16px !important;
+  }
+  
+  /* Modal */
+  .ant-modal {
+    max-width: calc(100vw - 32px) !important;
+    margin: 16px auto !important;
+  }
+  
+  .ant-modal-body {
+    max-height: calc(100vh - 200px) !important;
+    overflow-y: auto !important;
+  }
+  
+  /* Buttons in groups */
+  .ant-space {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  
+  /* Row/Col adjustments */
+  .ant-row {
+    margin-left: -8px !important;
+    margin-right: -8px !important;
+  }
+  
+  .ant-col {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+}
+
+/* Mobile Landscape / Small Tablet (576px - 767px) */
+@media (max-width: 767px) {
+  /* Dashboard header */
+  .dashboard-header {
+    padding: 0 12px !important;
+  }
+  
+  .header-right {
+    gap: 8px !important;
+  }
+  
+  .user-info {
+    display: none !important;
+  }
+  
+  /* Content */
+  .dashboard-content {
+    padding: 12px !important;
+  }
+  
+  .content-wrapper {
+    padding: 0 !important;
+  }
+  
+  /* Breadcrumb */
+  .ant-breadcrumb {
+    font-size: 12px !important;
+    margin-bottom: 12px !important;
+  }
+  
+  /* Cards */
+  .ant-card {
+    border-radius: 10px !important;
+  }
+  
+  .ant-card-body {
+    padding: 14px !important;
+  }
+  
+  .ant-card-head-title {
+    font-size: 15px !important;
+  }
+  
+  /* Statistics Grid - 2 columns */
+  .stats-row .ant-col {
+    flex: 0 0 50% !important;
+    max-width: 50% !important;
+  }
+  
+  .ant-statistic-content-value {
+    font-size: 20px !important;
+  }
+  
+  /* Tables */
+  .ant-table {
+    min-width: 500px !important;
+  }
+  
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    padding: 8px 6px !important;
+    font-size: 11px !important;
+  }
+  
+  /* Hide less important columns on tablet */
+  .hide-on-tablet {
+    display: none !important;
+  }
+  
+  /* Buttons */
+  .ant-btn {
+    height: 36px !important;
+    padding: 4px 12px !important;
+    font-size: 13px !important;
+  }
+  
+  .ant-btn-icon-only {
+    width: 36px !important;
+    padding: 0 !important;
+  }
+  
+  /* Modal */
+  .ant-modal {
+    max-width: calc(100vw - 24px) !important;
+    margin: 12px auto !important;
+    top: 20px !important;
+  }
+  
+  .ant-modal-header {
+    padding: 14px 16px !important;
+  }
+  
+  .ant-modal-body {
+    padding: 16px !important;
+    max-height: calc(100vh - 180px) !important;
+  }
+  
+  .ant-modal-footer {
+    padding: 12px 16px !important;
+  }
+  
+  /* Tabs */
+  .ant-tabs-nav {
+    margin-bottom: 12px !important;
+  }
+  
+  .ant-tabs-tab {
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+  }
+  
+  /* Search and filters */
+  .ant-input-search {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  
+  .ant-select {
+    width: 100% !important;
+  }
+  
+  /* Page titles */
+  h1, .ant-typography h1 {
+    font-size: 22px !important;
+  }
+  
+  h2, .ant-typography h2 {
+    font-size: 18px !important;
+  }
+  
+  h3, .ant-typography h3 {
+    font-size: 16px !important;
+  }
+  
+  /* Tags */
+  .ant-tag {
+    font-size: 11px !important;
+    padding: 1px 6px !important;
+    margin: 2px !important;
+  }
+  
+  /* Pagination */
+  .ant-pagination {
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    gap: 4px !important;
+  }
+  
+  .ant-pagination-item,
+  .ant-pagination-prev,
+  .ant-pagination-next {
+    min-width: 28px !important;
+    height: 28px !important;
+    line-height: 26px !important;
+  }
+  
+  .ant-pagination-options {
+    display: none !important;
+  }
+}
+
+/* Mobile Portrait (up to 575px) */
+@media (max-width: 575px) {
+  /* Main layout */
+  .ant-layout-sider-collapsed ~ .ant-layout {
+    margin-left: 0 !important;
+  }
+  
+  .dashboard-header {
+    padding: 0 8px !important;
+    height: 56px !important;
+  }
+  
+  .dashboard-content {
+    padding: 8px !important;
+  }
+  
+  /* Breadcrumb */
+  .ant-breadcrumb {
+    display: none !important;
+  }
+  
+  /* Cards */
+  .ant-card {
+    border-radius: 8px !important;
+    margin-bottom: 12px !important;
+  }
+  
+  .ant-card-body {
+    padding: 12px !important;
+  }
+  
+  .ant-card-head {
+    padding: 10px 12px !important;
+    min-height: auto !important;
+  }
+  
+  .ant-card-head-title {
+    font-size: 14px !important;
+    padding: 0 !important;
+  }
+  
+  /* Statistics Grid - 2 columns, compact */
+  .stats-row .ant-col {
+    flex: 0 0 50% !important;
+    max-width: 50% !important;
+    margin-bottom: 8px !important;
+  }
+  
+  .ant-statistic-title {
+    font-size: 11px !important;
+    margin-bottom: 4px !important;
+  }
+  
+  .ant-statistic-content-value {
+    font-size: 18px !important;
+  }
+  
+  /* Tables - Horizontal scroll */
+  .table-responsive,
+  .ant-table-wrapper {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+  
+  .ant-table {
+    min-width: 450px !important;
+  }
+  
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    padding: 6px 4px !important;
+    font-size: 10px !important;
+  }
+  
+  .ant-table-thead > tr > th:first-child,
+  .ant-table-tbody > tr > td:first-child {
+    padding-left: 8px !important;
+  }
+  
+  /* Hide columns on mobile */
+  .hide-on-mobile {
+    display: none !important;
+  }
+  
+  /* Action buttons in table */
+  .ant-table-cell .ant-space {
+    gap: 2px !important;
+  }
+  
+  .ant-table-cell .ant-btn-icon-only {
+    width: 28px !important;
+    height: 28px !important;
+    font-size: 12px !important;
+  }
+  
+  /* Buttons */
+  .ant-btn {
+    height: 32px !important;
+    padding: 4px 10px !important;
+    font-size: 12px !important;
+  }
+  
+  .ant-btn-sm {
+    height: 28px !important;
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+  }
+  
+  .ant-btn-icon-only {
+    width: 32px !important;
+  }
+  
+  /* Form items stacked */
+  .ant-form-item {
+    margin-bottom: 12px !important;
+  }
+  
+  .ant-form-item-label {
+    padding-bottom: 4px !important;
+  }
+  
+  .ant-form-item-label > label {
+    font-size: 12px !important;
+  }
+  
+  .ant-input,
+  .ant-select-selector,
+  .ant-picker {
+    height: 36px !important;
+    font-size: 13px !important;
+  }
+  
+  /* Modal - Full width on mobile */
+  .ant-modal {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+    top: 10px !important;
+  }
+  
+  .ant-modal-content {
+    border-radius: 12px !important;
+  }
+  
+  .ant-modal-header {
+    padding: 12px 14px !important;
+  }
+  
+  .ant-modal-title {
+    font-size: 16px !important;
+  }
+  
+  .ant-modal-body {
+    padding: 12px 14px !important;
+    max-height: calc(100vh - 160px) !important;
+  }
+  
+  .ant-modal-footer {
+    padding: 10px 14px !important;
+    display: flex !important;
+    flex-direction: column-reverse !important;
+    gap: 8px !important;
+  }
+  
+  .ant-modal-footer .ant-btn {
+    width: 100% !important;
+    margin: 0 !important;
+  }
+  
+  /* Dropdown */
+  .ant-dropdown-menu {
+    min-width: 140px !important;
+  }
+  
+  .ant-dropdown-menu-item {
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+  }
+  
+  /* Space component */
+  .ant-space {
+    flex-wrap: wrap !important;
+  }
+  
+  .ant-space-item {
+    margin-bottom: 4px !important;
+  }
+  
+  /* Tabs - Scrollable */
+  .ant-tabs-nav {
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+  }
+  
+  .ant-tabs-tab {
+    padding: 6px 10px !important;
+    font-size: 12px !important;
+  }
+  
+  /* Page titles */
+  h1, .ant-typography h1 {
+    font-size: 20px !important;
+    margin-bottom: 12px !important;
+  }
+  
+  h2, .ant-typography h2 {
+    font-size: 16px !important;
+  }
+  
+  h3, .ant-typography h3 {
+    font-size: 14px !important;
+  }
+  
+  /* Filter row */
+  .filter-row {
+    flex-direction: column !important;
+    gap: 8px !important;
+  }
+  
+  .filter-row .ant-select,
+  .filter-row .ant-input-search {
+    width: 100% !important;
+  }
+  
+  /* Alert */
+  .ant-alert {
+    padding: 8px 12px !important;
+    font-size: 12px !important;
+  }
+  
+  .ant-alert-message {
+    font-size: 13px !important;
+  }
+  
+  /* Pagination */
+  .ant-table-pagination {
+    padding: 12px 8px !important;
+  }
+  
+  .ant-pagination-item,
+  .ant-pagination-prev,
+  .ant-pagination-next {
+    min-width: 26px !important;
+    height: 26px !important;
+    line-height: 24px !important;
+    font-size: 11px !important;
+  }
+  
+  .ant-pagination-jump-prev,
+  .ant-pagination-jump-next {
+    display: none !important;
+  }
+  
+  /* Tooltip */
+  .ant-tooltip {
+    max-width: calc(100vw - 24px) !important;
+  }
+  
+  .ant-tooltip-inner {
+    font-size: 12px !important;
+    padding: 6px 10px !important;
+  }
+  
+  /* Progress */
+  .ant-progress-text {
+    font-size: 11px !important;
+  }
+  
+  /* Popconfirm */
+  .ant-popconfirm {
+    max-width: calc(100vw - 24px) !important;
+  }
+  
+  .ant-popconfirm-message-title {
+    font-size: 13px !important;
+  }
+  
+  .ant-popconfirm-buttons {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  
+  /* Row and Col for mobile */
+  .ant-row {
+    margin-left: -6px !important;
+    margin-right: -6px !important;
+  }
+  
+  .ant-col {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+}
+
+/* Extra small devices (up to 375px) */
+@media (max-width: 375px) {
+  .dashboard-content {
+    padding: 6px !important;
+  }
+  
+  .ant-card-body {
+    padding: 10px !important;
+  }
+  
+  .ant-table {
+    min-width: 380px !important;
+  }
+  
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    padding: 5px 3px !important;
+    font-size: 9px !important;
+  }
+  
+  .ant-btn {
+    height: 30px !important;
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+  }
+  
+  .ant-statistic-content-value {
+    font-size: 16px !important;
+  }
+}
+
+/* ===== UTILITY CLASSES FOR RESPONSIVE HIDING ===== */
+.hide-on-desktop {
+  display: none !important;
+}
+
+@media (max-width: 991px) {
+  .hide-on-tablet {
+    display: none !important;
+  }
+  .show-on-tablet {
+    display: block !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .hide-on-mobile-landscape {
+    display: none !important;
+  }
+}
+
+@media (max-width: 575px) {
+  .hide-on-mobile {
+    display: none !important;
+  }
+  .show-on-mobile {
+    display: block !important;
+  }
+  .hide-on-desktop {
+    display: block !important;
+  }
+}
+
+/* ===== TABLE RESPONSIVE WRAPPER ===== */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ===== MOBILE-FIRST BUTTON GROUPS ===== */
+.button-group-responsive {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 575px) {
+  .button-group-responsive {
+    flex-direction: column;
+    width: 100%;
+  }
+  
+  .button-group-responsive .ant-btn {
+    width: 100%;
+  }
+}
+
+/* ===== SIDEBAR OVERLAY FOR MOBILE ===== */
+@media (max-width: 991px) {
+  .sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 1000;
+    transition: opacity 0.3s;
+  }
+  
+  .sidebar-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* ===== PERFORMANCE OPTIMIZATIONS ===== */
+/* Reduce transition duration for faster UI response */
+.ant-layout,
+.ant-layout-sider,
+.ant-card {
+  transition: background 0.15s ease-in-out !important;
+}
+
+/* ===== SMOOTH TRANSITIONS ===== */
+.ant-layout,
+.ant-layout-sider,
+.ant-card {
+  transition: background 0.2s ease-in-out !important;
+}
+
+.ant-btn {
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+}
+
+/* ===== FIX FOR IOS SAFARI ===== */
+@supports (-webkit-touch-callout: none) {
+  .ant-modal-body {
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  .ant-table-wrapper {
+    -webkit-overflow-scrolling: touch;
+  }
+}

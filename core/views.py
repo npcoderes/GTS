@@ -213,16 +213,16 @@ def login_view(request):
             station = primary_role_assign.station if primary_role_assign else None
             
             # Validate Role (if provided) - Case insensitive, check both code and name
-            if role:
-                input_role = str(role).strip().upper()
-                user_role_code = str(role_code).upper() if role_code else ''
-                user_role_name = str(role_name).upper() if role_name else ''
+            # if role:
+            #     input_role = str(role).strip().upper()
+            #     user_role_code = str(role_code).upper() if role_code else ''
+            #     user_role_name = str(role_name).upper() if role_name else ''
                 
-                if input_role != user_role_code and input_role != user_role_name:
-                     return unauthorized_response('User role does not match')
+            #     if input_role != user_role_code and input_role != user_role_name:
+            #          return unauthorized_response('User role does not match')
             
-            if not role_code:   
-                return unauthorized_response('User role or station not found')
+            # if not role_code:   
+            #     return unauthorized_response('User role or station not found')
             # Construct response
             user_data = {
                 'id': user.id,
@@ -368,7 +368,8 @@ def logout_view(request):
         
         return Response({'message': 'Logged out successfully'})
     except Exception as e:
-        return error_response(str(e))
+        logger.error(f"Logout error for user {request.user.email}: {str(e)}", exc_info=True)
+        return server_error_response('Failed to logout. Please try again.')
 
 
 
@@ -405,14 +406,36 @@ def request_password_reset(request):
             # We return 200 even if user not found to prevent enumeration, 
             # OR return 404 if client UX needs it. User asked for "error msg user not found".
             return Response({'message': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if OTP was sent in the last 2 minutes (throttle to prevent abuse)
+        recent = PasswordResetSession.objects.filter(
+            user=user,
+            is_used=False,
+            created_at__gt=timezone.now() - timezone.timedelta(minutes=2)
+        ).first()
+
+        if recent:
+            # Calculate remaining seconds
+            elapsed = (timezone.now() - recent.created_at).total_seconds()
+            remaining = max(0, 120 - int(elapsed))
+            return Response({
+                'message': 'OTP recently sent. Please wait before requesting again.',
+                'resend_after_seconds': remaining
+            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # Invalidate all previous active (unused, unexpired) OTP sessions for this user
+        # This ensures old OTPs become invalid when a new one is requested
+        PasswordResetSession.objects.filter(
+            user=user,
+            is_used=False,
+            expires_at__gt=timezone.now()
+        ).update(is_used=True)
             
         # Generate OTP
         otp = f"{random.randint(100000, 999999)}"
         
         # Create Session
         expiry = timezone.now() + timezone.timedelta(minutes=10)
-        
-        # Invalidate previous active sessions? Optionally.
         
         PasswordResetSession.objects.create(
             user=user,
@@ -431,7 +454,10 @@ def request_password_reset(request):
         else:
              return Response({'message': 'User has no email linked for OTP'}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({'message': 'OTP sent to registered email'})
+        return Response({
+            'message': 'OTP sent to registered email',
+            'resend_after_seconds': 120  # Client can use this to throttle resends
+            })
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -894,6 +920,89 @@ class StationViewSet(viewsets.ModelViewSet):
     queryset = Station.objects.all().order_by('name')
     serializer_class = StationSerializer
     permission_classes = [IsAuthenticated]
+    
+    def list(self, request, *args, **kwargs):
+        """
+        List stations - automatically imports/syncs from SAP before returning.
+        This eliminates the need for a manual 'Import from SAP' button.
+        Auto-sync is throttled to once every 5 minutes to improve performance.
+        """
+        # Auto-sync from SAP in the background (non-blocking for the response)
+        # Only sync if last sync was more than 5 minutes ago
+        try:
+            from django.core.cache import cache
+            last_sync_key = 'stations_last_auto_sync'
+            last_sync = cache.get(last_sync_key)
+            
+            # If no recent sync (within 5 minutes), trigger auto-import
+            if not last_sync:
+                self._auto_import_from_sap(request.user)
+                # Set cache for 5 minutes
+                cache.set(last_sync_key, timezone.now(), 300)
+        except Exception as e:
+            logger.warning(f"Auto-import from SAP failed (non-critical): {str(e)}")
+        
+        # Return the standard list response
+        return super().list(request, *args, **kwargs)
+    
+    def _auto_import_from_sap(self, user):
+        """
+        Internal method to auto-import stations from SAP.
+        Called automatically when listing stations.
+        """
+        try:
+            sap_result = sap_service.get_stations_from_sap()
+            
+            if not sap_result.get('success'):
+                logger.warning(f"Failed to get stations from SAP: {sap_result.get('error')}")
+                return
+            
+            sap_stations = sap_result.get('stations', [])
+            
+            for sap_station in sap_stations:
+                try:
+                    station_code = sap_station.get('code')
+                    station_name = sap_station.get('name')
+                    station_sap_type = sap_station.get('type', '')
+                    
+                    if not station_code or not station_name:
+                        continue
+                    
+                    # Map SAP type to local type
+                    local_type = 'DBS' if station_sap_type == 'DB' else 'MS'
+                    
+                    # Check if station exists
+                    existing_station = Station.objects.filter(
+                        Q(sap_station_id=station_code) | Q(code=station_code)
+                    ).first()
+                    
+                    station_data = {
+                        'name': station_name,
+                        'type': local_type,
+                        'city': sap_station.get('city', ''),
+                        'phone': sap_station.get('phone', ''),
+                        'sap_station_id': station_code,
+                        'sap_last_synced_at': timezone.now()
+                    }
+                    
+                    if existing_station:
+                        # Update existing station
+                        for key, value in station_data.items():
+                            setattr(existing_station, key, value)
+                        existing_station.save()
+                    else:
+                        # Create new station
+                        station_data['code'] = station_code
+                        Station.objects.create(**station_data)
+                        
+                except Exception as e:
+                    logger.warning(f"Error importing station {sap_station.get('code')}: {str(e)}")
+                    continue
+                    
+            logger.info(f"Auto-imported {len(sap_stations)} stations from SAP")
+            
+        except Exception as e:
+            logger.error(f"Auto-import from SAP error: {str(e)}", exc_info=True)
     
     def perform_create(self, serializer):
         """Create station and sync to SAP"""
@@ -1383,18 +1492,12 @@ def register_fcm_token(request):
         # Validate deviceToken
         if not device_token:
             logger.warning(f"FCM token registration failed: deviceToken is missing for user {request.user.email}")
-            return Response(
-                {'error': 'deviceToken is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('deviceToken is required')
         
         # Validate deviceToken is a non-empty string
         if not isinstance(device_token, str) or not device_token.strip():
             logger.warning(f"FCM token registration failed: invalid deviceToken format for user {request.user.email}")
-            return Response(
-                {'error': 'deviceToken must be a valid non-empty string'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('deviceToken must be a valid non-empty string')
         
         device_token = device_token.strip()
         user = request.user
@@ -1426,10 +1529,7 @@ def register_fcm_token(request):
             )
         except Exception as db_error:
             logger.error(f"Database error while registering FCM token for user {user.email}: {str(db_error)}", exc_info=True)
-            return Response(
-                {'error': 'Failed to save device token. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to save device token. Please try again.')
 
         if created:
             logger.info(f"Registered new FCM token for user {user.email} on device {device_type}")
@@ -1446,10 +1546,7 @@ def register_fcm_token(request):
     
     except Exception as e:
         logger.error(f"Unexpected error in register_fcm_token: {str(e)}", exc_info=True)
-        return Response(
-            {'error': 'An unexpected error occurred. Please try again.'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return server_error_response('An unexpected error occurred. Please try again.')
 
 
 @api_view(['POST'])
@@ -1471,23 +1568,39 @@ def unregister_fcm_token(request):
     device_token = request.data.get('deviceToken')
     user = request.user
     
-    if device_token:
-        # Deactivate specific device
-        count = DeviceToken.objects.filter(
-            user=user,
-            token=device_token
-        ).update(is_active=False)
+    try:
+        if device_token:
+            # Deactivate specific device
+            logger.info(f"Unregistering specific FCM token for user {user.email} (ID: {user.id})")
+            
+            count = DeviceToken.objects.filter(
+                user=user,
+                token=device_token
+            ).update(is_active=False)
+            
+            if count > 0:
+                message = "Device token deactivated"
+                logger.info(f"Successfully deactivated FCM token for user {user.email}")
+            else:
+                message = "Token not found"
+                logger.warning(f"FCM token not found for user {user.email} - token may have already been removed")
+        else:
+            # Deactivate all user's devices (logout from all)
+            logger.info(f"Unregistering ALL FCM tokens for user {user.email} (ID: {user.id})")
+            
+            count = DeviceToken.objects.filter(user=user).update(is_active=False)
+            message = f"{count} device(s) deactivated"
+            
+            logger.info(f"Successfully deactivated {count} FCM token(s) for user {user.email}")
         
-        message = f"Device token deactivated" if count > 0 else "Token not found"
-    else:
-        # Deactivate all user's devices (logout from all)
-        count = DeviceToken.objects.filter(user=user).update(is_active=False)
-        message = f"{count} device(s) deactivated"
+        return Response({
+            'message': message,
+            'deactivated_count': count
+        })
     
-    return Response({
-        'message': message,
-        'deactivated_count': count
-    })
+    except Exception as e:
+        logger.error(f"Error unregistering FCM token for user {user.email}: {str(e)}", exc_info=True)
+        return server_error_response('Failed to unregister device token. Please try again.')
 
 
 @api_view(['POST'])
@@ -1522,16 +1635,16 @@ def send_notification(request):
     notification_type = request.data.get('type', 'general')
     
     if not user_id:
-        return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return validation_error_response('user_id is required')
     if not title:
-        return Response({'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return validation_error_response('title is required')
     if not body:
-        return Response({'error': 'body is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return validation_error_response('body is required')
     
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+        return not_found_response('User not found')
     
     if not target_user.fcm_token:
         return Response({

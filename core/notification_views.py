@@ -8,6 +8,9 @@ from rest_framework.permissions import AllowAny
 from django.shortcuts import get_object_or_404
 from core.models import User
 from core.notification_models import DeviceToken
+from core.error_response import (
+    validation_error_response, server_error_response
+)
 
 
 class DriverNotificationRegisterView(views.APIView):
@@ -26,10 +29,7 @@ class DriverNotificationRegisterView(views.APIView):
         platform = request.data.get('platform', 'unknown')
         
         if not user_id or not device_token:
-            return Response(
-                {'error': 'userId and deviceToken are required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('userId and deviceToken are required')
         
         try:
             user = get_object_or_404(User, id=user_id)
@@ -52,10 +52,7 @@ class DriverNotificationRegisterView(views.APIView):
             })
             
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to register device token. Please try again.')
 
 
 class DriverNotificationUnregisterView(views.APIView):
@@ -73,10 +70,7 @@ class DriverNotificationUnregisterView(views.APIView):
         device_token = request.data.get('deviceToken')
         
         if not device_token:
-            return Response(
-                {'error': 'deviceToken is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('deviceToken is required')
         
         try:
             # Deactivate the token (or delete if preferred)
@@ -88,10 +82,7 @@ class DriverNotificationUnregisterView(views.APIView):
             })
             
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to unregister device token. Please try again.')
 
 
 class DBSNotificationRegisterView(views.APIView):
@@ -107,10 +98,7 @@ class DBSNotificationRegisterView(views.APIView):
         platform = request.data.get('platform', 'unknown')
         
         if not user_id or not device_token:
-            return Response(
-                {'error': 'userId and deviceToken are required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('userId and deviceToken are required')
         
         try:
             user = get_object_or_404(User, id=user_id)
@@ -132,10 +120,7 @@ class DBSNotificationRegisterView(views.APIView):
             })
             
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to register device token. Please try again.')
 
 
 class DBSNotificationUnregisterView(views.APIView):
@@ -149,10 +134,7 @@ class DBSNotificationUnregisterView(views.APIView):
         device_token = request.data.get('deviceToken')
         
         if not device_token:
-            return Response(
-                {'error': 'deviceToken is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('deviceToken is required')
         
         try:
             count = DeviceToken.objects.filter(token=device_token).update(is_active=False)
@@ -163,10 +145,7 @@ class DBSNotificationUnregisterView(views.APIView):
             })
             
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to unregister device token. Please try again.')
 
 
 class MSNotificationRegisterView(views.APIView):
@@ -182,10 +161,7 @@ class MSNotificationRegisterView(views.APIView):
         platform = request.data.get('platform', 'unknown')
         
         if not user_id or not device_token:
-            return Response(
-                {'error': 'userId and deviceToken are required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('userId and deviceToken are required')
         
         try:
             user = get_object_or_404(User, id=user_id)
@@ -207,10 +183,7 @@ class MSNotificationRegisterView(views.APIView):
             })
             
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to register device token. Please try again.')
 
 
 class MSNotificationUnregisterView(views.APIView):
@@ -223,10 +196,7 @@ class MSNotificationUnregisterView(views.APIView):
         device_token = request.data.get('deviceToken')
         
         if not device_token:
-            return Response(
-                {'error': 'deviceToken is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('deviceToken is required')
         
         try:
             count = DeviceToken.objects.filter(token=device_token).update(is_active=False)
@@ -237,7 +207,4 @@ class MSNotificationUnregisterView(views.APIView):
             })
             
         except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return server_error_response('Failed to unregister device token. Please try again.')

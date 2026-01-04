@@ -14,7 +14,8 @@ class UserSerializer(serializers.ModelSerializer):
                   'is_password_reset_required', 'mpin']
         read_only_fields = ['date_joined', 'mpin']
         extra_kwargs = {
-            'password': {'write_only': True, 'required': False}
+            'password': {'write_only': True, 'required': False},
+            'email': {'required': False, 'allow_null': True, 'allow_blank': True}
         }
 
     def validate(self, data):

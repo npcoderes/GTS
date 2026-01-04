@@ -2,6 +2,7 @@ from rest_framework import views, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 from django.utils import timezone
 from core.error_response import (
     error_response, validation_error_response, not_found_response,
@@ -319,16 +320,20 @@ class MSFillResumeView(views.APIView):
                 if not ms:
                     return validation_error_response('User is not assigned to an MS station')
                 
-                # Find trip at this MS that is confirmed and in progress
-                # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
-                # Invalid (not in model): FILLING, FILLED, DISPATCHED
+                # Find an in-progress trip at this MS (fallback when no token/tripId is provided)
                 trip = Trip.objects.select_related(
                     'token', 'vehicle', 'driver', 'ms', 'dbs'
                 ).prefetch_related('ms_fillings').filter(
                     ms=ms,
-                    # ms_arrival_confirmed=True,
-                    status__in=['AT_MS']  # 'FILLING', 'FILLED' - not in model STATUS_CHOICES
-                ).first()
+                    status__in=[
+                        'PENDING',
+                        'AT_MS',
+                        'IN_TRANSIT',
+                        'AT_DBS',
+                        'DECANTING_CONFIRMED',
+                        'RETURNED_TO_MS'
+                    ]
+                ).order_by('-origin_confirmed_at', '-created_at').first()
                 
                 if not trip:
                     return Response({
@@ -474,28 +479,31 @@ class MSFillStartView(views.APIView):
                 print(f"Error decoding prefill photo: {e}")
         
         # Get or create MSFilling record
-        filling, created = MSFilling.objects.get_or_create(trip=trip)
-        
-        # Update filling start time and readings
-        filling.start_time = timezone.now()
-        if pressure:
-            print(f"Setting prefill pressure: {pressure}")
-            filling.prefill_pressure_bar = pressure
-        else:
-            print("No prefill pressure provided")
-        if mfm:
-            print(f"Setting prefill mfm: {mfm}")
-            filling.prefill_mfm = mfm
-        else:
-            print("No prefill mfm provided")
-        if photo_file: filling.prefill_photo_operator = photo_file
-        filling.save()
+        # Use transaction.atomic to ensure filling and trip are saved together
+        # This prevents race conditions where driver resume API reads partial state
+        with transaction.atomic():
+            filling, created = MSFilling.objects.get_or_create(trip=trip)
+            
+            # Update filling start time and readings
+            filling.start_time = timezone.now()
+            if pressure:
+                print(f"Setting prefill pressure: {pressure}")
+                filling.prefill_pressure_bar = pressure
+            else:
+                print("No prefill pressure provided")
+            if mfm:
+                print(f"Setting prefill mfm: {mfm}")
+                filling.prefill_mfm = mfm
+            else:
+                print("No prefill mfm provided")
+            if photo_file: filling.prefill_photo_operator = photo_file
+            filling.save()
 
-        # Update trip status and step tracking
-        # trip.status = 'FILLING'
-        if trip.update_step(3):
-            trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}
-        trip.save()
+            # Update trip status and step tracking
+            # trip.status = 'FILLING'
+            if trip.update_step(3):
+                trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True}
+            trip.save()
 
         # Send WebSocket update to Driver
         try:
@@ -575,32 +583,35 @@ class MSFillEndView(views.APIView):
                 print(f"Error decoding postfill photo: {e}")
         
         # Update filling end time and readings
-        filling.end_time = timezone.now()
-        if pressure:
-            print(f"Setting postfill pressure: {pressure}")
-            filling.postfill_pressure_bar = pressure
-        else:
-            print("No postfill pressure provided")
-        if mfm:
-            print(f"Setting postfill mfm: {mfm}")
-            filling.postfill_mfm = mfm
-        else:
-            print("No postfill mfm provided")
-        if photo_file: filling.postfill_photo_operator = photo_file
-        
-        # Calculate filled quantity
-        if filling.prefill_mfm and filling.postfill_mfm:
-            try:
-                filling.filled_qty_kg = float(filling.postfill_mfm) - float(filling.prefill_mfm)
-            except ValueError:
-                pass
+        # Use transaction.atomic to ensure filling and trip are saved together
+        # This prevents race conditions where driver resume API reads partial state
+        with transaction.atomic():
+            filling.end_time = timezone.now()
+            if pressure:
+                print(f"Setting postfill pressure: {pressure}")
+                filling.postfill_pressure_bar = pressure
+            else:
+                print("No postfill pressure provided")
+            if mfm:
+                print(f"Setting postfill mfm: {mfm}")
+                filling.postfill_mfm = mfm
+            else:
+                print("No postfill mfm provided")
+            if photo_file: filling.postfill_photo_operator = photo_file
+            
+            # Calculate filled quantity
+            if filling.prefill_mfm and filling.postfill_mfm:
+                try:
+                    filling.filled_qty_kg = float(filling.postfill_mfm) - float(filling.prefill_mfm)
+                except ValueError:
+                    pass
 
-        filling.save()
+            filling.save()
 
-        # Update trip status and step tracking
-        # trip.status = 'FILLED'
-        trip.step_data = {**trip.step_data, 'ms_post_reading_done': True}
-        trip.save()
+            # Update trip status and step tracking
+            # trip.status = 'FILLED'
+            trip.step_data = {**trip.step_data, 'ms_post_reading_done': True}
+            trip.save()
 
         # Send WebSocket update to Driver
         try:
@@ -668,15 +679,18 @@ class MSConfirmFillingView(views.APIView):
                     'filled_qty': float(filling.filled_qty_kg)
                 })
         
-        # Mark as confirmed by MS operator
-        filling.confirmed_by_ms_operator = request.user
-        filling.save()
+        # Use transaction.atomic to ensure filling and trip are saved together
+        # This prevents race conditions where driver resume API reads partial state
+        with transaction.atomic():
+            # Mark as confirmed by MS operator
+            filling.confirmed_by_ms_operator = request.user
+            filling.save()
 
-        # Mark operator confirmed in step_data
-        # Stay at step 3 until driver also confirms
-        if trip.current_step >= 3:
-            trip.step_data = {**trip.step_data, 'ms_operator_confirmed': True}
-        trip.save()
+            # Mark operator confirmed in step_data
+            # Stay at step 3 until driver also confirms
+            if trip.current_step >= 3:
+                trip.step_data = {**trip.step_data, 'ms_operator_confirmed': True}
+            trip.save()
         
         return Response({
             "success": True,

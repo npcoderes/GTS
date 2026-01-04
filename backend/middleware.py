@@ -7,6 +7,8 @@ import logging
 import json
 import traceback
 from django.utils import timezone
+from django.http import JsonResponse
+from django.core.exceptions import RequestDataTooBig
 
 request_logger = logging.getLogger('request_logger')
 error_logger = logging.getLogger('django.request')
@@ -22,8 +24,43 @@ class RequestLoggingMiddleware:
         self.get_response = get_response
     
     def __call__(self, request):
-        # Get request details BEFORE processing
-        request_data = self._get_request_data(request)
+        # Try to get request details BEFORE processing
+        try:
+            request_data = self._get_request_data(request)
+        except RequestDataTooBig as e:
+            # Log the oversized request
+            error_message = (
+                f"\n{'='*60}\n"
+                f"REQUEST TOO LARGE at {timezone.now().isoformat()}\n"
+                f"{'='*60}\n"
+                f"URL: {request.build_absolute_uri()}\n"
+                f"Method: {request.method}\n"
+                f"IP: {self._get_client_ip(request)}\n"
+                f"Content-Length: {request.META.get('CONTENT_LENGTH', 'unknown')} bytes\n"
+                f"Content-Type: {request.META.get('CONTENT_TYPE', 'unknown')}\n"
+                f"Error: Request payload too large. Max allowed is 50MB.\n"
+                f"{'='*60}\n"
+            )
+            error_logger.error(error_message)
+            request_logger.error(f"REQUEST TOO LARGE: {request.method} {request.build_absolute_uri()} | Content-Length: {request.META.get('CONTENT_LENGTH', 'unknown')}")
+            
+            return JsonResponse({
+                'success': False,
+                'error': 'Request payload too large. Maximum allowed size is 50MB.',
+                'max_size_mb': 50
+            }, status=413)
+        except Exception as e:
+            # Log any other error reading request
+            error_logger.error(f"Error reading request data: {e}")
+            request_data = {
+                'method': request.method,
+                'path': request.path,
+                'full_url': request.build_absolute_uri(),
+                'user': 'Unknown',
+                'ip': self._get_client_ip(request),
+                'timestamp': timezone.now().isoformat(),
+                'payload': f'[Error reading payload: {e}]'
+            }
         
         # Process the request
         response = self.get_response(request)

@@ -5,6 +5,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import Reconciliation
 from core.models import UserRole, User
+from core.error_response import forbidden_response
 
 class ReconciliationListView(views.APIView):
     """
@@ -20,10 +21,7 @@ class ReconciliationListView(views.APIView):
         is_super_admin = user.user_roles.filter(role__code='SUPER_ADMIN', active=True).exists()
         
         if not (is_eic or is_super_admin):
-            return Response(
-                {'error': 'Permission denied. Only EIC can view reconciliation details.'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return forbidden_response('Permission denied. Only EIC can view reconciliation details.')
             
         # 2. Get Reconciliation Records
         # Filter by EIC's MS stations if not super admin

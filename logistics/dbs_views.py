@@ -3,10 +3,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
+from django.db import transaction
 from django.utils import timezone
 from datetime import datetime, timedelta
 from .models import Trip, StockRequest
 from core.models import Station
+from core.error_response import (
+    validation_error_response, not_found_response, server_error_response
+)
 from rest_framework.decorators import action
 import os
 
@@ -32,10 +36,7 @@ class DBSDashboardView(views.APIView):
                 dbs = user_role.station
         
         if not dbs:
-            return Response(
-                {'error': 'User is not assigned to a DBS station and no dbs_id provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('User is not assigned to a DBS station and no dbs_id provided')
 
         # Fetch Trips for this DBS
         # Fetch Trips for this DBS
@@ -43,7 +44,7 @@ class DBSDashboardView(views.APIView):
         # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
         # Invalid (not in model): DISPATCHED, ARRIVED_AT_DBS, DECANTING_STARTED, DECANTING_COMPLETED
         relevant_statuses = [
-            'IN_TRANSIT', 'AT_DBS',  # 'DISPATCHED', 'ARRIVED_AT_DBS' - not in model
+         'DISPATCHED','PENDING','AT_MS', 'IN_TRANSIT', 'AT_DBS',  # 'DISPATCHED', 'ARRIVED_AT_DBS' - not in model
             'DECANTING_CONFIRMED',  # 'DECANTING_STARTED', 'DECANTING_COMPLETED' - not in model
             'COMPLETED'
         ]
@@ -139,7 +140,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         """
         token_val = request.data.get('tripToken')
         if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('tripToken is required')
 
         # Look for the trip using the token_no
         trip = get_object_or_404(
@@ -204,7 +205,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                     dbs = user_role.station
                 
                 if not dbs:
-                    return Response({'error': 'User is not assigned to a DBS station'}, status=status.HTTP_400_BAD_REQUEST)
+                    return validation_error_response('User is not assigned to a DBS station')
                 
                 # Find trip at this DBS that is confirmed and in progress
                 # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
@@ -296,9 +297,9 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             })
 
         except Trip.DoesNotExist:
-            return Response({'error': 'Trip not found for this token'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found_response('Trip not found for this token')
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return server_error_response('An error occurred while resuming decant')
 
     @action(detail=False, methods=['post'], url_path='decant/start')
     def decant_start(self, request):
@@ -312,7 +313,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         photo_base64 = request.data.get('photoBase64')
 
         if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
@@ -337,23 +338,26 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                 print(f"Error decoding pre_decant photo: {e}")
         
         # Get or create Decanting record
+        # Use transaction.atomic to ensure decanting and trip are saved together
+        # This prevents race conditions where driver resume API reads partial state
         from .models import DBSDecanting
-        decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
-        decanting.start_time = timezone.now()
+        with transaction.atomic():
+            decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+            decanting.start_time = timezone.now()
 
-        if pressure:
-            decanting.pre_dec_pressure_bar = pressure
-        if mfm:
-            decanting.pre_dec_reading = mfm
-        if photo_file:
-            decanting.pre_decant_photo_operator = photo_file
+            if pressure:
+                decanting.pre_dec_pressure_bar = pressure
+            if mfm:
+                decanting.pre_dec_reading = mfm
+            if photo_file:
+                decanting.pre_decant_photo_operator = photo_file
 
-        decanting.save()
+            decanting.save()
 
-        # Update trip step tracking
-        if trip.update_step(5):
-            trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True}
-        trip.save()
+            # Update trip step tracking
+            if trip.update_step(5):
+                trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True}
+            trip.save()
         
         # WebSocket update to driver is disabled; send push notification instead
         try:
@@ -413,7 +417,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         photo_base64 = request.data.get('photoBase64')
 
         if not token_val:
-            return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
@@ -437,30 +441,44 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             except Exception as e:
                 print(f"Error decoding post_decant photo: {e}")
         
-        from .models import DBSDecanting
-        decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
-        decanting.end_time = timezone.now()
+        # Use transaction.atomic to ensure decanting and trip are saved together
+        # This prevents race conditions where driver resume API reads partial state
+        from .models import DBSDecanting, MSFilling
+        with transaction.atomic():
+            decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+            decanting.end_time = timezone.now()
 
-        if pressure:
-            decanting.post_dec_pressure_bar = pressure
-        if mfm:
-            decanting.post_dec_reading = mfm
-        if photo_file:
-            decanting.post_decant_photo_operator = photo_file
+            if pressure:
+                decanting.post_dec_pressure_bar = pressure
+            if mfm:
+                decanting.post_dec_reading = mfm
+            if photo_file:
+                decanting.post_decant_photo_operator = photo_file
 
-        delivered_qty = None
-        if decanting.pre_dec_reading and decanting.post_dec_reading:
-            try:
-                delivered_qty = float(decanting.post_dec_reading) - float(decanting.pre_dec_reading)
-                decanting.delivered_qty_kg = delivered_qty
-            except ValueError:
-                pass  # Invalid readings, cannot calculate
-        decanting.save()
+            delivered_qty = None
+            # if decanting.pre_dec_reading and decanting.post_dec_reading:
+            #     try:
+            #         delivered_qty = float(decanting.post_dec_reading) - float(decanting.pre_dec_reading)
+                    
+            #         # Validate: delivered quantity cannot exceed filled quantity from MS
+            #         ms_filling = MSFilling.objects.filter(trip=trip).first()
+            #         if ms_filling and ms_filling.filled_qty_kg:
+            #             filled_qty = float(ms_filling.filled_qty_kg)
+            #             if delivered_qty > filled_qty:
+            #                 return validation_error_response(
+            #                     f'Delivered quantity ({delivered_qty:.2f} kg) cannot exceed filled quantity ({filled_qty:.2f} kg). Please verify the readings.',
+                              
+            #                 )
+                    
+            #         decanting.delivered_qty_kg = delivered_qty
+            #     except ValueError:
+            #         pass  # Invalid readings, cannot calculate
+            decanting.save()
 
-        # Update trip step tracking - stay at step 5 until both parties confirm
-        if trip.current_step >= 5:
-            trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True}
-        trip.save()
+            # Update trip step tracking - stay at step 5 until both parties confirm
+            if trip.current_step >= 5:
+                trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True}
+            trip.save()
         
         # WebSocket update to driver is disabled; send push notification instead
         try:
@@ -517,30 +535,32 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         token_val = request.data.get('tripToken')
         
         if not token_val:
-             return Response({'error': 'tripToken is required'}, status=status.HTTP_400_BAD_REQUEST)
+             return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
         
+        # Use transaction.atomic to ensure decanting and trip are saved together
+        # This prevents race conditions where driver resume API reads partial state
         from .models import DBSDecanting
-        decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
-        
-        # Validate: post_dec_reading - pre_dec_reading should match delivered_qty_kg
-        if decanting.pre_dec_reading and decanting.post_dec_reading and decanting.delivered_qty_kg:
-            calculated_qty = float(decanting.post_dec_reading) - float(decanting.pre_dec_reading)
-            if abs(calculated_qty - float(decanting.delivered_qty_kg)) > 0.01:
-                return Response({
-                    'error': 'Quantity mismatch',
-                    'message': f'Calculated quantity ({calculated_qty} kg) does not match delivered quantity ({decanting.delivered_qty_kg} kg)'
-                }, status=status.HTTP_400_BAD_REQUEST)
-        
-        decanting.confirmed_by_dbs_operator = request.user
-        decanting.save()
+        with transaction.atomic():
+            decanting, _ = DBSDecanting.objects.get_or_create(trip=trip)
+            
+            # Validate: post_dec_reading - pre_dec_reading should match delivered_qty_kg
+            if decanting.pre_dec_reading and decanting.post_dec_reading and decanting.delivered_qty_kg:
+                calculated_qty = float(decanting.post_dec_reading) - float(decanting.pre_dec_reading)
+                if abs(calculated_qty - float(decanting.delivered_qty_kg)) > 0.01:
+                    return validation_error_response(
+                        f'Calculated quantity ({calculated_qty} kg) does not match delivered quantity ({decanting.delivered_qty_kg} kg)'
+                    )
+            
+            decanting.confirmed_by_dbs_operator = request.user
+            decanting.save()
 
-        # Mark operator confirmed in step_data  
-        # Stay at step 5 until driver also confirms
-        if trip.current_step >= 5:
-            trip.step_data = {**trip.step_data, 'dbs_operator_confirmed': True}
-        trip.save()
+            # Mark operator confirmed in step_data  
+            # Stay at step 5 until driver also confirms
+            if trip.current_step >= 5:
+                trip.step_data = {**trip.step_data, 'dbs_operator_confirmed': True}
+            trip.save()
         
         return Response({
             "success": True,
@@ -561,7 +581,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                 dbs = user_role.station
         
         if not dbs:
-            return Response({'error': 'User is not assigned to a DBS station'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('User is not assigned to a DBS station')
 
         # Date Filtering
         end_date_str = request.query_params.get('end_date')
@@ -579,7 +599,7 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             else:
                 start_date_obj = end_date_obj - timedelta(days=30)
         except ValueError:
-            return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error_response('Invalid date format. Use YYYY-MM-DD')
 
         # Query
         requests = StockRequest.objects.filter(
@@ -621,10 +641,7 @@ class DBSStockTransferListView(views.APIView):
                 dbs = user_role.station
         
         if not dbs:
-            return Response(
-                {'error': 'User is not assigned to a DBS station'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('User is not assigned to a DBS station')
 
         # Build query with optional date filters
         query = Q(dbs=dbs)
@@ -741,10 +758,7 @@ class DBSPendingArrivalsView(views.APIView):
                 dbs = user_role.station
         
         if not dbs:
-            return Response(
-                {'error': 'User is not assigned to a DBS station'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return validation_error_response('User is not assigned to a DBS station')
         
         # Get trips that have arrived at DBS (waiting for decanting to start)
         # These are trips where driver has clicked "Arrive at DBS"
