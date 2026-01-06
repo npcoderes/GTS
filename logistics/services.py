@@ -49,6 +49,17 @@ def find_active_shift(driver, check_time=None):
                 
     return None
 
+
+def is_driver_on_shift(driver, check_time=None):
+    """
+    Returns True if the driver currently has an active approved shift,
+    False otherwise.
+    
+    This is a convenience function that wraps find_active_shift
+    for cases where only a boolean check is needed.
+    """
+    return find_active_shift(driver, check_time) is not None
+
 def get_available_drivers(ms_id):
     """
     Find drivers who:

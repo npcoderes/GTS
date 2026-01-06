@@ -68,7 +68,6 @@ def create_complete_trip():
             print("[ERROR] No vehicle found! Creating one...")
             vehicle = Vehicle.objects.create(
                 registration_no='GJ-01-CNG-1234',
-                capacity_kg=Decimal('1500.00'),
                 active=True
             )
         

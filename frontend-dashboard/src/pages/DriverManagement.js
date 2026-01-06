@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, Select, message, DatePicker, Alert, Typography, Card, Space, Tag, TimePicker, Divider } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, KeyOutlined, CopyOutlined } from '@ant-design/icons';
+import { Table, Button, Modal, Form, Input, Select, message, DatePicker, Alert, Typography, Card, Space, Tag, Upload, Tooltip } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, KeyOutlined, CopyOutlined, EyeOutlined, InboxOutlined } from '@ant-design/icons';
 import apiClient from '../services/api';
 import moment from 'moment';
 
 const { Option } = Select;
 const { Text, Title } = Typography;
+const { Dragger } = Upload;
 
 const DriverManagement = () => {
     const [drivers, setDrivers] = useState([]);
@@ -17,6 +18,7 @@ const DriverManagement = () => {
     const [createdDriverCredentials, setCreatedDriverCredentials] = useState(null);
     const [editingDriver, setEditingDriver] = useState(null);
     const [vehicles, setVehicles] = useState([]);
+    const [licenseFileList, setLicenseFileList] = useState([]);
     const [form] = Form.useForm();
 
     useEffect(() => {
@@ -66,7 +68,8 @@ const DriverManagement = () => {
     const handleAdd = () => {
         setEditingDriver(null);
         form.resetFields();
-        form.setFieldsValue({ password: generatePassword() });
+        form.setFieldsValue({ password: generatePassword(), status: 'ACTIVE' });
+        setLicenseFileList([]);
         setIsModalVisible(true);
     };
 
@@ -78,29 +81,37 @@ const DriverManagement = () => {
             license_expiry: record.license_expiry ? moment(record.license_expiry) : null,
             status: record.status
         });
+        // Set existing document if any
+        if (record.license_document_url) {
+            setLicenseFileList([{
+                uid: '-1',
+                name: 'License Document',
+                status: 'done',
+                url: record.license_document_url
+            }]);
+        } else {
+            setLicenseFileList([]);
+        }
         setIsModalVisible(true);
     };
 
     const handleDelete = async (id) => {
-        try {
-            await apiClient.delete(`/drivers/${id}/`);
-            message.success('Driver deleted successfully');
-            fetchDrivers();
-        } catch (error) {
-            message.error('Failed to delete driver');
-        }
-    };
-
-    // Generate credentials locally for display (matches backend signal logic)
-    const generateCredentials = (phone, fullName, driverId) => {
-        const phoneClean = phone?.replace(/\D/g, '') || '';
-        const email = phoneClean
-            ? `driver_${phoneClean}@gts.local`
-            : `driver_${fullName.toLowerCase().replace(/\s+/g, '_')}_${driverId}@gts.local`;
-        const password = phoneClean
-            ? `driver_${phoneClean.slice(-4)}`
-            : `driver_${driverId}`;
-        return { email, password };
+        Modal.confirm({
+            title: 'Delete Driver',
+            content: 'Are you sure you want to delete this driver? This action cannot be undone.',
+            okText: 'Delete',
+            okType: 'danger',
+            cancelText: 'Cancel',
+            onOk: async () => {
+                try {
+                    await apiClient.delete(`/drivers/${id}/`);
+                    message.success('Driver deleted successfully');
+                    fetchDrivers();
+                } catch (error) {
+                    message.error('Failed to delete driver');
+                }
+            }
+        });
     };
 
     const copyToClipboard = (text) => {
@@ -108,65 +119,66 @@ const DriverManagement = () => {
         message.success('Copied to clipboard!');
     };
 
+    // File upload validation
+    const beforeUpload = (file) => {
+        const isValidType = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'].includes(file.type);
+        if (!isValidType) {
+            message.error('Only PDF, PNG, and JPG files are allowed!');
+            return Upload.LIST_IGNORE;
+        }
+        const isLt5M = file.size / 1024 / 1024 < 5;
+        if (!isLt5M) {
+            message.error('Document must be smaller than 5MB!');
+            return Upload.LIST_IGNORE;
+        }
+        return false; // Prevent auto upload
+    };
+
+    const handleLicenseChange = ({ fileList }) => {
+        setLicenseFileList(fileList.slice(-1)); // Keep only the last file
+    };
+
     const handleModalOk = async () => {
         try {
             const values = await form.validateFields();
-            const payload = {
-                ...values,
-                license_expiry: values.license_expiry.format('YYYY-MM-DD')
-            };
+
+            // Use FormData for file upload support
+            const formData = new FormData();
+            formData.append('full_name', values.full_name);
+            formData.append('license_no', values.license_no);
+            formData.append('phone', values.phone);
+            formData.append('license_expiry', values.license_expiry.format('YYYY-MM-DD'));
+            formData.append('status', values.status);
+            if (values.assigned_vehicle) formData.append('assigned_vehicle', values.assigned_vehicle);
+
+            // Add license document if uploaded
+            if (licenseFileList.length > 0 && licenseFileList[0].originFileObj) {
+                formData.append('license_document', licenseFileList[0].originFileObj);
+            }
 
             setSubmitLoading(true);
 
             if (editingDriver) {
-                await apiClient.put(`/drivers/${editingDriver.id}/`, payload);
+                await apiClient.put(`/drivers/${editingDriver.id}/`, formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                });
                 message.success('Driver updated successfully');
                 setIsModalVisible(false);
             } else {
-                // Create new driver with optional shift
-                const driverPayload = { ...payload };
-                delete driverPayload.shift_start_time;
-                delete driverPayload.shift_end_time;
-                
-                const response = await apiClient.post('/drivers/', driverPayload);
-                const driverId = response.data.id;
-                
-                // Create shift if time fields are provided
-                if (values.shift_start_time && values.shift_end_time && values.assigned_vehicle) {
-                    try {
-                        const today = moment();
-                        const startDateTime = today.clone().set({
-                            hour: values.shift_start_time.hour(),
-                            minute: values.shift_start_time.minute(),
-                            second: 0
-                        });
-                        const endDateTime = today.clone().set({
-                            hour: values.shift_end_time.hour(),
-                            minute: values.shift_end_time.minute(),
-                            second: 0
-                        });
-                        
-                        await apiClient.post('/shifts/', {
-                            driver: driverId,
-                            vehicle: values.assigned_vehicle,
-                            start_time: startDateTime.toISOString(),
-                            end_time: endDateTime.toISOString(),
-                            is_recurring: true,
-                            recurrence_pattern: 'DAILY'
-                        });
-                        message.success('Driver and shift created successfully');
-                    } catch (shiftError) {
-                        message.warning('Driver created but shift creation failed: ' + 
-                            (shiftError.response?.data?.message || shiftError.response?.data?.error || 'Unknown error'));
-                    }
-                } else {
-                    message.success('Driver created successfully');
-                }
+                // For new driver, also add email and password
+                if (values.email) formData.append('email', values.email);
+                formData.append('password', values.password);
+
+                await apiClient.post('/drivers/', formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                });
+                message.success('Driver created successfully');
                 setIsModalVisible(false);
             }
             fetchDrivers();
         } catch (error) {
-            message.error(error.response?.data?.message || 'Operation failed');
+            console.error('Operation failed:', error);
+            message.error(error.response?.data?.message || error.response?.data?.license_document?.[0] || 'Operation failed');
         } finally {
             setSubmitLoading(false);
         }
@@ -178,6 +190,24 @@ const DriverManagement = () => {
         { title: 'Phone', dataIndex: 'phone', key: 'phone' },
         { title: 'Vendor', dataIndex: ['vendor_details', 'full_name'], key: 'vendor' },
         { title: 'Assigned Vehicle', dataIndex: ['assigned_vehicle_details', 'registration_no'], key: 'assigned_vehicle' },
+        {
+            title: 'License Doc',
+            key: 'license_doc',
+            render: (_, record) => record.license_document_url ? (
+                <Tooltip title="View Document">
+                    <Button
+                        type="link"
+                        icon={<EyeOutlined />}
+                        onClick={() => window.open(record.license_document_url, '_blank')}
+                        size="small"
+                    >
+                        View
+                    </Button>
+                </Tooltip>
+            ) : (
+                <Tag color="orange">Not uploaded</Tag>
+            )
+        },
         {
             title: 'Login Email',
             dataIndex: ['user_details', 'email'],
@@ -194,11 +224,16 @@ const DriverManagement = () => {
         {
             title: 'Actions',
             key: 'actions',
+            width: 120,
             render: (_, record) => (
-                <>
-                    <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} style={{ marginRight: 8 }} />
-                    <Button icon={<DeleteOutlined />} danger onClick={() => handleDelete(record.id)} />
-                </>
+                <Space>
+                    <Tooltip title="Edit">
+                        <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} size="small" />
+                    </Tooltip>
+                    <Tooltip title="Delete">
+                        <Button icon={<DeleteOutlined />} danger onClick={() => handleDelete(record.id)} size="small" />
+                    </Tooltip>
+                </Space>
             ),
         },
     ];
@@ -214,16 +249,16 @@ const DriverManagement = () => {
 
             <Alert
                 message="Driver Account Creation"
-                description="Please provide an email and password for the driver. These credentials will be used for the driver mobile app login."
+                description="Provide an email and password for new drivers. These credentials will be used for the driver mobile app login."
                 type="info"
                 showIcon
                 style={{ marginBottom: 16 }}
             />
 
-            <Table 
-                columns={columns} 
-                dataSource={drivers} 
-                rowKey="id" 
+            <Table
+                columns={columns}
+                dataSource={drivers}
+                rowKey="id"
                 loading={loading}
                 pagination={{
                     defaultPageSize: 10,
@@ -231,6 +266,7 @@ const DriverManagement = () => {
                     pageSizeOptions: ['10', '20', '50', '100'],
                     showTotal: (total) => `Total ${total} drivers`
                 }}
+                scroll={{ x: 1200 }}
             />
 
             {/* Add/Edit Driver Modal */}
@@ -240,6 +276,7 @@ const DriverManagement = () => {
                 onOk={handleModalOk}
                 onCancel={() => setIsModalVisible(false)}
                 confirmLoading={submitLoading}
+                width={600}
             >
                 <Form form={form} layout="vertical">
                     <Form.Item
@@ -247,65 +284,60 @@ const DriverManagement = () => {
                         label="Full Name"
                         rules={[{ required: true, message: 'Please enter full name' }]}
                     >
-                        <Input />
+                        <Input placeholder="Enter driver's full name" />
                     </Form.Item>
-                    <Form.Item
-                        name="license_no"
-                        label="License Number"
-                        rules={[{ required: true, message: 'Please enter license number' }]}
-                    >
-                        <Input />
-                    </Form.Item>
-                    <Form.Item
-                        name="license_expiry"
-                        label="License Expiry"
-                        rules={[{ required: true, message: 'Please select expiry date' }]}
-                    >
-                        <DatePicker style={{ width: '100%' }} />
-                    </Form.Item>
+
+                    <div style={{ display: 'flex', gap: 16 }}>
+                        <Form.Item
+                            name="license_no"
+                            label="License Number"
+                            rules={[{ required: true, message: 'Please enter license number' }]}
+                            style={{ flex: 1 }}
+                        >
+                            <Input placeholder="e.g., DL-1234567890" />
+                        </Form.Item>
+                        <Form.Item
+                            name="license_expiry"
+                            label="License Expiry"
+                            rules={[{ required: true, message: 'Please select expiry date' }]}
+                            style={{ flex: 1 }}
+                        >
+                            <DatePicker style={{ width: '100%' }} />
+                        </Form.Item>
+                    </div>
+
                     <Form.Item
                         name="phone"
                         label="Phone Number"
                         rules={[{ required: true, message: 'Please enter phone number' }]}
                     >
-                        <Input />
+                        <Input placeholder="e.g., +91 9876543210" />
                     </Form.Item>
 
                     {!editingDriver && (
-                        <>
+                        <div style={{ display: 'flex', gap: 16 }}>
                             <Form.Item
                                 name="email"
-                                label="Login Email (Optional)"
+                                label="Login Email"
                                 rules={[
+                                    { required: true, message: 'Please enter email' },
                                     { type: 'email', message: 'Please enter valid email' }
                                 ]}
+                                style={{ flex: 1 }}
                             >
-                                <Input prefix={<UserOutlined />} placeholder="Enter email" />
+                                <Input prefix={<UserOutlined />} placeholder="driver@example.com" />
                             </Form.Item>
-                            <Form.Item  
+                            <Form.Item
                                 name="password"
                                 label="Login Password"
                                 rules={[{ required: true, message: 'Please enter password' }]}
+                                style={{ flex: 1 }}
                             >
                                 <Input.Password prefix={<KeyOutlined />} />
                             </Form.Item>
-                            
-                            <Divider>Create Daily Shift (Optional)</Divider>
-                            
-                            <Form.Item
-                                name="shift_start_time"
-                                label="Shift Start Time"
-                            >
-                                <TimePicker style={{ width: '100%' }} format="HH:mm" />
-                            </Form.Item>
-                            <Form.Item
-                                name="shift_end_time"
-                                label="Shift End Time"
-                            >
-                                <TimePicker style={{ width: '100%' }} format="HH:mm" />
-                            </Form.Item>
-                        </>
+                        </div>
                     )}
+
                     <Form.Item
                         name="assigned_vehicle"
                         label="Assigned Vehicle"
@@ -324,16 +356,38 @@ const DriverManagement = () => {
                             })}
                         </Select>
                     </Form.Item>
+
                     <Form.Item
                         name="status"
                         label="Status"
-                        initialValue="ACTIVE"
                     >
                         <Select>
                             <Option value="ACTIVE">Active</Option>
                             <Option value="INACTIVE">Inactive</Option>
                             <Option value="SUSPENDED">Suspended</Option>
                         </Select>
+                    </Form.Item>
+
+                    <Form.Item
+                        label="License Document"
+                        extra="Accepted formats: PDF, PNG, JPG. Max size: 5MB"
+                        required={!editingDriver}
+                    >
+                        <Dragger
+                            fileList={licenseFileList}
+                            beforeUpload={beforeUpload}
+                            onChange={handleLicenseChange}
+                            maxCount={1}
+                            accept=".pdf,.png,.jpg,.jpeg"
+                        >
+                            <p className="ant-upload-drag-icon">
+                                <InboxOutlined />
+                            </p>
+                            <p className="ant-upload-text">Click or drag file to upload</p>
+                            <p className="ant-upload-hint" style={{ color: '#888' }}>
+                                Upload driver's license document
+                            </p>
+                        </Dragger>
                     </Form.Item>
                 </Form>
             </Modal>
@@ -411,4 +465,3 @@ const DriverManagement = () => {
 };
 
 export default DriverManagement;
-

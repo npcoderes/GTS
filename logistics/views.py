@@ -520,8 +520,10 @@ class ShiftViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        if not request.user.user_roles.filter(role__code='EIC', active=True).exists():
-            return forbidden_response('Permission denied. Only EIC can approve shifts.')
+        # Allow both EIC and SUPER_ADMIN to approve shifts
+        allowed_roles = ['EIC', 'SUPER_ADMIN']
+        if not request.user.user_roles.filter(role__code__in=allowed_roles, active=True).exists():
+            return forbidden_response('Permission denied. Only EIC or Super Admin can approve shifts.')
         
         shift = self.get_object()
         shift.status = 'APPROVED'
@@ -541,8 +543,10 @@ class ShiftViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        if not request.user.user_roles.filter(role__code='EIC', active=True).exists():
-            return forbidden_response('Permission denied. Only EIC can reject shifts.')
+        # Allow both EIC and SUPER_ADMIN to reject shifts
+        allowed_roles = ['EIC', 'SUPER_ADMIN']
+        if not request.user.user_roles.filter(role__code__in=allowed_roles, active=True).exists():
+            return forbidden_response('Permission denied. Only EIC or Super Admin can reject shifts.')
         
         shift = self.get_object()
         reason = request.data.get('reason', '').strip()

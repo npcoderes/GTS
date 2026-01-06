@@ -26,8 +26,9 @@ def get_trip_by_token(token_id):
     return get_object_or_404(Trip, token__id=token_id)
 
 def check_eic_permission(user):
-    """Check if user has EIC role"""
-    return user.user_roles.filter(role__code='EIC', active=True).exists()
+    """Check if user has EIC or SUPER_ADMIN role"""
+    allowed_roles = ['EIC', 'SUPER_ADMIN']
+    return user.user_roles.filter(role__code__in=allowed_roles, active=True).exists()
 
 # --- EIC ViewSets ---
 
@@ -223,17 +224,37 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                             'expires_in_seconds': 300
                         })
                     else:
-                        # Just approve without assigning driver
+                        # Just approve without assigning driver - enters token queue
                         stock_request.status = 'APPROVED'
                         stock_request.approval_notes = notes
+                        stock_request.approved_at = timezone.now()
+                        stock_request.approved_by = request.user
                         stock_request.save()
                         
-                        return Response({
-                            'success': True,
-                            'status': 'approved',
-                            'stock_request_id': stock_request.id,
-                            'message': 'Stock request approved. Please assign a driver.'
-                        })
+                        # Trigger auto-allocation if waiting tokens exist
+                        trip_created = None
+                        try:
+                            from .token_queue_service import token_queue_service
+                            trip_created = token_queue_service.trigger_allocation_on_approval(stock_request)
+                        except Exception as e:
+                            import logging
+                            logging.getLogger(__name__).error(f"Auto-allocation error: {e}")
+                        
+                        if trip_created:
+                            return Response({
+                                'success': True,
+                                'status': 'assigned',
+                                'stock_request_id': stock_request.id,
+                                'trip_id': trip_created.id,
+                                'message': 'Stock request approved and auto-allocated to waiting vehicle.'
+                            })
+                        else:
+                            return Response({
+                                'success': True,
+                                'status': 'approved',
+                                'stock_request_id': stock_request.id,
+                                'message': 'Stock request approved. Waiting for vehicle in token queue.'
+                            })
                 else:
                     # Reject the request
                     stock_request.status = 'REJECTED'
@@ -615,7 +636,6 @@ class EICDriverApprovalView(views.APIView):
                 'shiftId': shift.id,
                 'shiftDate': local_start.strftime('%Y-%m-%d') if local_start else None,
                 'vehicleNumber': shift.vehicle.registration_no if shift.vehicle else None,
-                'vehicleCapacity': float(shift.vehicle.capacity_kg) if shift.vehicle else None,
                 'createdBy': shift.created_by.get_full_name() if shift.created_by else 'System',
                 'createdAt': local_created.isoformat() if local_created else None
             })
@@ -1381,4 +1401,119 @@ class EICAlertListView(views.APIView):
         return Response({
             'alerts': results,
             'total': len(results)
+        })
+
+
+class EICShiftHistoryView(views.APIView):
+    """
+    API Path: GET /api/eic/driver-approvals/history
+    
+    Returns approved, rejected, and expired shifts for EIC dashboard history tab.
+    Supports filtering by status query parameter: ?status=APPROVED|REJECTED|EXPIRED
+    Supports date filtering: ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+    Supports pagination: ?page=1&page_size=20
+    """
+    
+    def get(self, request):
+        if not check_eic_permission(request.user):
+            return forbidden_response('Permission denied')
+        
+        status_filter = request.query_params.get('status', None)
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 20))
+        
+        # Base queryset for non-pending shifts
+        queryset = Shift.objects.select_related(
+            'driver', 'vehicle', 'created_by', 'approved_by', 'shift_template'
+        ).exclude(status='PENDING').order_by('-updated_at')
+        
+        # Filter by status if provided
+        if status_filter:
+            if status_filter.upper() == 'EXPIRED':
+                # Expired shifts are APPROVED shifts with end_time in the past
+                queryset = Shift.objects.select_related(
+                    'driver', 'vehicle', 'created_by', 'approved_by', 'shift_template'
+                ).filter(
+                    status='APPROVED',
+                    end_time__lt=timezone.now()
+                ).order_by('-end_time')
+            else:
+                queryset = queryset.filter(status=status_filter.upper())
+        
+        # Filter by date range if provided
+        if start_date:
+            queryset = queryset.filter(start_time__date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(start_time__date__lte=end_date)
+        
+        # Get counts for each status (for stats)
+        approved_count = Shift.objects.filter(status='APPROVED').count()
+        rejected_count = Shift.objects.filter(status='REJECTED').count()
+        expired_count = Shift.objects.filter(status='APPROVED', end_time__lt=timezone.now()).count()
+        
+        # Pagination
+        total_count = queryset.count()
+        offset = (page - 1) * page_size
+        shifts = queryset[offset:offset + page_size]
+        
+        history_list = []
+        for shift in shifts:
+            driver = shift.driver
+            
+            # Normalize datetimes to IST
+            def _local_dt(dt):
+                if not dt:
+                    return None
+                display_tz = timezone.get_fixed_timezone(330)
+                try:
+                    aware = dt
+                    if timezone.is_naive(aware):
+                        aware = timezone.make_aware(aware, timezone.utc)
+                    return aware.astimezone(display_tz)
+                except Exception:
+                    return dt
+            
+            local_start = _local_dt(shift.start_time)
+            local_end = _local_dt(shift.end_time)
+            local_updated = _local_dt(shift.updated_at)
+            
+            # Determine if expired
+            is_expired = shift.status == 'APPROVED' and shift.end_time and shift.end_time < timezone.now()
+            display_status = 'EXPIRED' if is_expired else shift.status
+            
+            history_list.append({
+                'id': shift.id,
+                'driverId': driver.id,
+                'driverName': driver.full_name,
+                'driverPhone': driver.phone,
+                'licenseNumber': driver.license_no,
+                'licenseExpiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
+                'vehicleNumber': shift.vehicle.registration_no if shift.vehicle else None,
+                'vehicleId': shift.vehicle.id if shift.vehicle else None,
+                'shiftDate': local_start.date().isoformat() if local_start else None,
+                'startTime': local_start.strftime('%H:%M') if local_start else None,
+                'endTime': local_end.strftime('%H:%M') if local_end else None,
+                'shiftType': shift.shift_template.name if shift.shift_template else 'Custom',
+                'status': display_status,
+                'rejectedReason': shift.rejection_reason or None,
+                'approvedBy': shift.approved_by.full_name if shift.approved_by else None,
+                'approvedAt': local_updated.isoformat() if local_updated else None,
+                'createdBy': shift.created_by.full_name if shift.created_by else 'System',
+                'updatedAt': local_updated.isoformat() if local_updated else None,
+            })
+        
+        return Response({
+            'shifts': history_list,
+            'counts': {
+                'approved': approved_count,
+                'rejected': rejected_count,
+                'expired': expired_count
+            },
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count
+            }
         })

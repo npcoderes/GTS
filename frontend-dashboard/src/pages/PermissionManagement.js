@@ -25,63 +25,39 @@ import {
   UserOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
-import { permissionsAPI, rolesAPI, usersAPI } from '../services/api';
+import { permissionsAPI, rolesAPI, usersAPI, stationsAPI } from '../services/api';
 
-const { Option } = Select;
 const { TextArea } = Input;
 const { Search } = Input;
-
-// Define which roles should be hidden from the Role Permissions tab (case-insensitive check will be used)
-const HIDDEN_ROLES = ['fdodo customer', 'sgl transport vendor', 'super administrator', 'super admin', 'sgl customer'];
-
-// Define allowed permissions per role (only these will appear in Manage modal)
-// If a role is not listed here, it will show NO permissions (empty list)
-// Keys are lowercase for case-insensitive matching
-const ROLE_PERMISSION_MAP = {
-  'dbs operator': [
-    'can_approve_request',
-    'can_submit_manual_request',
-  ],
-  'engineer in charge': [
-    'can_approve_request',
-    'can_manage_clusters',
-    'can_override_tokens',
-    'can_trigger_correction_actions',
-    'can_manage_drivers',
-  ],
-  'ms operator': [
-    // No permissions for MS Operator
-  ],
-  'sgl customer': [
-    'can_approve_request',
-    'can_submit_manual_request',
-  ],
-  'driver': [
-    // No permissions for Driver
-  ],
-};
 
 const PermissionManagement = () => {
   const [permissions, setPermissions] = useState([]);
   const [userPermissions, setUserPermissions] = useState([]);
   const [rolePermissions, setRolePermissions] = useState([]);
+  const [stationPermissions, setStationPermissions] = useState([]);
+  const [stations, setStations] = useState([]);
   const [roles, setRoles] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [userPermLoading, setUserPermLoading] = useState(false);
   const [rolePermLoading, setRolePermLoading] = useState(false);
+  const [stationPermLoading, setStationPermLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [userPermModalVisible, setUserPermModalVisible] = useState(false);
   const [rolePermModalVisible, setRolePermModalVisible] = useState(false);
+  const [stationPermModalVisible, setStationPermModalVisible] = useState(false);
   const [editingPermission, setEditingPermission] = useState(null);
   const [editingUserPerm, setEditingUserPerm] = useState(null);
   const [selectedRole, setSelectedRole] = useState(null);
+  const [selectedStation, setSelectedStation] = useState(null);
   const [rolePermValues, setRolePermValues] = useState({});
+  const [stationPermValues, setStationPermValues] = useState({});
   const [userSearch, setUserSearch] = useState('');
   const [permSearch, setPermSearch] = useState('');
   const [form] = Form.useForm();
   const [userPermForm] = Form.useForm();
   const [rolePermForm] = Form.useForm();
+  const [stationPermForm] = Form.useForm();
   const [activeTab, setActiveTab] = useState('role-permissions');
 
   const categories = [
@@ -97,19 +73,16 @@ const PermissionManagement = () => {
     fetchPermissions();
     fetchUsers();
     fetchRoles();
+    fetchStations();
   }, []);
-
-  // Debug logging removed for performance
-  // useEffect(() => {
-  //   console.log('Roles state updated:', roles);
-  //   console.log('Role Permissions state:', rolePermissions);
-  // }, [roles, rolePermissions]);
 
   useEffect(() => {
     if (activeTab === 'user-overrides') {
       fetchUserPermissions();
     } else if (activeTab === 'role-permissions' && rolePermissions.length === 0) {
       fetchRolePermissions();
+    } else if (activeTab === 'station-permissions' && stationPermissions.length === 0) {
+      fetchStationPermissions();
     }
   }, [activeTab]);
 
@@ -123,6 +96,16 @@ const PermissionManagement = () => {
     }
   };
 
+  const fetchStations = async () => {
+    try {
+      const response = await stationsAPI.getAll();
+      const data = Array.isArray(response.data) ? response.data : (response.data?.results || []);
+      setStations(data);
+    } catch (error) {
+      setStations([]);
+    }
+  };
+
   const fetchRolePermissions = async () => {
     setRolePermLoading(true);
     try {
@@ -133,6 +116,19 @@ const PermissionManagement = () => {
       setRolePermissions([]);
     } finally {
       setRolePermLoading(false);
+    }
+  };
+
+  const fetchStationPermissions = async () => {
+    setStationPermLoading(true);
+    try {
+      const response = await permissionsAPI.getStationPermissions();
+      const data = Array.isArray(response.data) ? response.data : (response.data?.results || []);
+      setStationPermissions(data);
+    } catch (error) {
+      setStationPermissions([]);
+    } finally {
+      setStationPermLoading(false);
     }
   };
 
@@ -185,14 +181,13 @@ const PermissionManagement = () => {
       code: record.code,
       name: record.name,
       description: record.description,
-      category: record.category,
     });
     setModalVisible(true);
   };
 
   const handleDelete = async (id) => {
     try {
-      await permissionsAPI.deleteUserPermission(id);
+      await permissionsAPI.deletePermission(id);
       message.success('Permission deleted successfully');
       fetchPermissions();
     } catch (error) {
@@ -264,6 +259,34 @@ const PermissionManagement = () => {
     setRolePermModalVisible(true);
   };
 
+  const handleManageStationPerms = async (station) => {
+    setSelectedStation(station);
+    setStationPermModalVisible(true); // open first so UI always shows even if fetch fails
+
+    try {
+      const response = await permissionsAPI.getStationPermissions(station.id);
+      const data = Array.isArray(response.data) ? response.data : (response.data?.results || []);
+
+      const formValues = {};
+      permissions.forEach((perm) => {
+        formValues[perm.code] = false;
+      });
+
+      data.forEach((sp) => {
+        if (sp.permission_code) {
+          formValues[sp.permission_code] = !!sp.granted;
+        }
+      });
+
+      setStationPermValues(formValues);
+      setTimeout(() => {
+        stationPermForm.setFieldsValue(formValues);
+      }, 100);
+    } catch (error) {
+      console.error('Failed to load station permissions:', error);
+    }
+  };
+
   const handleRolePermSave = async () => {
     try {
       const values = await rolePermForm.validateFields();
@@ -279,6 +302,25 @@ const PermissionManagement = () => {
       fetchRolePermissions();
     } catch (error) {
       message.error('Failed to update role permissions');
+      console.error(error);
+    }
+  };
+
+  const handleStationPermSave = async () => {
+    try {
+      const values = await stationPermForm.validateFields();
+
+      await permissionsAPI.bulkUpdateStationPermissions({
+        station_id: selectedStation.id,
+        permissions: values,
+      });
+
+      message.success(`Permissions updated for ${selectedStation.name}`);
+      setStationPermModalVisible(false);
+      stationPermForm.resetFields();
+      fetchStationPermissions();
+    } catch (error) {
+      message.error('Failed to update station permissions');
       console.error(error);
     }
   };
@@ -306,10 +348,10 @@ const PermissionManagement = () => {
   const handleSubmit = async (values) => {
     try {
       if (editingPermission) {
-        await permissionsAPI.updateRolePermission(editingPermission.id, values);
+        await permissionsAPI.updatePermission(editingPermission.id, values);
         message.success('Permission updated successfully');
       } else {
-        await permissionsAPI.createRolePermission(values);
+        await permissionsAPI.createPermission(values);
         message.success('Permission created successfully');
       }
       setModalVisible(false);
@@ -434,20 +476,6 @@ const PermissionManagement = () => {
       width: 200,
     },
     {
-      title: 'Category',
-      dataIndex: 'category',
-      key: 'category',
-      width: 150,
-      render: (category) => {
-        const cat = categories.find((c) => c.value === category);
-        return (
-          <Tag color={getCategoryColor(category)}>
-            {cat?.label || category}
-          </Tag>
-        );
-      },
-    },
-    {
       title: 'Description',
       dataIndex: 'description',
       key: 'description',
@@ -569,9 +597,7 @@ const PermissionManagement = () => {
               </div>
             ) : (
               <Row gutter={[16, 16]}>
-                {roles
-                  .filter((role) => !HIDDEN_ROLES.includes(role.name.toLowerCase()))
-                  .map((role) => {
+                {roles.map((role) => {
                   const rolePerms = rolePermissions.filter(
                     (rp) => rp.role === role.id && rp.granted
                   );
@@ -612,6 +638,91 @@ const PermissionManagement = () => {
                                 {rolePerms.length > 5 && (
                                   <div style={{ fontSize: '12px', color: '#666', marginTop: 4 }}>
                                     +{rolePerms.length - 5} more
+                                  </div>
+                                )}
+                              </Space>
+                            </div>
+                          ) : (
+                            <div style={{
+                              color: '#999',
+                              fontStyle: 'italic',
+                              textAlign: 'center',
+                              padding: '20px 0'
+                            }}>
+                              No permissions assigned
+                              <div style={{ fontSize: '12px', marginTop: 8 }}>
+                                Click Manage to add permissions
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </Card>
+                    </Col>
+                  );
+                })}
+              </Row>
+            )}
+          </Tabs.TabPane>
+          <Tabs.TabPane
+            tab={
+              <span>
+                <SafetyOutlined />
+                Station Permissions
+              </span>
+            }
+            key="station-permissions"
+          >
+            {stationPermLoading ? (
+              <div style={{ textAlign: 'center', padding: '50px' }}>
+                <Spin size="large" tip="Loading stations..." />
+              </div>
+            ) : stations.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '50px', color: '#999' }}>
+                <SafetyOutlined style={{ fontSize: 48, marginBottom: 16 }} />
+                <div>No stations found</div>
+              </div>
+            ) : (
+              <Row gutter={[16, 16]}>
+                {stations.map((station) => {
+                  const stationPerms = stationPermissions.filter(
+                    (sp) => sp.station === station.id && sp.granted
+                  );
+
+                  return (
+                    <Col xs={24} sm={12} lg={8} key={station.id}>
+                      <Card
+                        title={
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <SafetyOutlined />
+                            <span>{station.name}</span>
+                          </div>
+                        }
+                        extra={
+                          <Button
+                            type="primary"
+                            size="small"
+                            onClick={() => handleManageStationPerms(station)}
+                          >
+                            Manage
+                          </Button>
+                        }
+                        style={{ height: '100%' }}
+                      >
+                        <div style={{ minHeight: 120 }}>
+                          {stationPerms.length > 0 ? (
+                            <div>
+                              <div style={{ marginBottom: 8, fontSize: '12px', color: '#666' }}>
+                                {stationPerms.length} permission{stationPerms.length !== 1 ? 's' : ''}
+                              </div>
+                              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                                {stationPerms.slice(0, 5).map((sp) => (
+                                  <Tag key={sp.id} color="blue">
+                                    {sp.permission_name}
+                                  </Tag>
+                                ))}
+                                {stationPerms.length > 5 && (
+                                  <div style={{ fontSize: '12px', color: '#666', marginTop: 4 }}>
+                                    +{stationPerms.length - 5} more
                                   </div>
                                 )}
                               </Space>
@@ -695,20 +806,6 @@ const PermissionManagement = () => {
             rules={[{ required: true, message: 'Please enter permission name' }]}
           >
             <Input placeholder="View Trips" />
-          </Form.Item>
-
-          <Form.Item
-            label="Category"
-            name="category"
-            rules={[{ required: true, message: 'Please select a category' }]}
-          >
-            <Select placeholder="Select category">
-              {categories.map((cat) => (
-                <Option key={cat.value} value={cat.value}>
-                  {cat.label}
-                </Option>
-              ))}
-            </Select>
           </Form.Item>
 
           <Form.Item label="Description" name="description">
@@ -893,11 +990,8 @@ const PermissionManagement = () => {
             <div style={{ maxHeight: '500px', overflowY: 'auto', paddingRight: '10px' }}>
               {/* Filter permissions based on role - only show allowed permissions */}
               {(() => {
-                const allowedPerms = ROLE_PERMISSION_MAP[selectedRole.name.toLowerCase()];
-                const filteredPermissions = allowedPerms 
-                  ? permissions.filter(perm => allowedPerms.includes(perm.code))
-                  : []; // If role not in map, show no permissions
-                
+                const filteredPermissions = permissions;
+
                 if (filteredPermissions.length === 0) {
                   return (
                     <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
@@ -906,7 +1000,7 @@ const PermissionManagement = () => {
                     </div>
                   );
                 }
-                
+
                 return filteredPermissions.map((perm) => {
                 const isChecked = rolePermValues[perm.code] || false;
                 return (
@@ -950,6 +1044,88 @@ const PermissionManagement = () => {
                 );
               });
               })()}
+            </div>
+          </Form>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>
+            No permissions available
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title={`Manage Permissions for ${selectedStation?.name || 'Station'}`}
+        open={stationPermModalVisible}
+        onCancel={() => {
+          setStationPermModalVisible(false);
+          stationPermForm.resetFields();
+          setSelectedStation(null);
+          setStationPermValues({});
+        }}
+        onOk={handleStationPermSave}
+        width={700}
+        okText="Save"
+        destroyOnClose
+        forceRender={false}
+      >
+        {selectedStation && permissions.length > 0 ? (
+          <Form form={stationPermForm} layout="vertical">
+            <div style={{ marginBottom: 16, padding: '12px', background: '#f0f7ff', borderRadius: 6 }}>
+              <strong>Station: {selectedStation.name}</strong>
+              <div style={{ fontSize: '12px', color: '#666', marginTop: 4 }}>
+                Station overrides apply after role/user permissions. If a permission is off here, it is off for this station.
+              </div>
+            </div>
+            <div style={{ maxHeight: '500px', overflowY: 'auto', paddingRight: '10px' }}>
+              {permissions.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
+                  <SafetyOutlined style={{ fontSize: 36, marginBottom: 12 }} />
+                  <div>No permissions available for this station</div>
+                </div>
+              ) : (
+                permissions.map((perm) => {
+                  const isChecked = stationPermValues[perm.code] || false;
+                  return (
+                    <div
+                      key={perm.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '12px',
+                        border: `1px solid ${isChecked ? '#1890ff' : '#f0f0f0'}`,
+                        borderRadius: 6,
+                        backgroundColor: isChecked ? '#f0f7ff' : '#fafafa',
+                        marginBottom: 8,
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 500, marginBottom: 4 }}>{perm.name}</div>
+                        <div style={{ fontSize: '12px', color: '#666' }}>
+                          <code style={{ background: '#fff', padding: '2px 6px', borderRadius: 3 }}>
+                            {perm.code}
+                          </code>
+                          {perm.description && ` - ${perm.description}`}
+                        </div>
+                      </div>
+                      <Form.Item
+                        name={perm.code}
+                        valuePropName="checked"
+                        style={{ margin: 0 }}
+                      >
+                        <Switch
+                          checked={isChecked}
+                          onChange={(checked) => {
+                            const newValues = { ...stationPermValues, [perm.code]: checked };
+                            setStationPermValues(newValues);
+                            stationPermForm.setFieldsValue({ [perm.code]: checked });
+                          }}
+                        />
+                      </Form.Item>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </Form>
         ) : (

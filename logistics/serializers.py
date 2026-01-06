@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     Vehicle, Driver, StockRequest, Token, Trip,
-    MSFilling, DBSDecanting, Reconciliation, Alert, Shift
+    MSFilling, DBSDecanting, Reconciliation, Alert, Shift, ShiftTemplate
 )
 from core.serializers import UserSerializer, StationSerializer
 from core.models import User
@@ -9,13 +9,35 @@ from core.models import User
 class VehicleSerializer(serializers.ModelSerializer):
     vendor_details = UserSerializer(source='vendor', read_only=True)
     ms_home_details = StationSerializer(source='ms_home', read_only=True)
+    registration_document_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Vehicle
         fields = '__all__'
         extra_kwargs = {
             'vendor': {'required': False},
+            'registration_document': {'required': False, 'write_only': True},
         }
+
+    def get_registration_document_url(self, obj):
+        if obj.registration_document:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.registration_document.url)
+            return obj.registration_document.url
+        return None
+
+    def validate_registration_document(self, value):
+        if value:
+            # 5MB limit
+            max_size = 5 * 1024 * 1024
+            if value.size > max_size:
+                raise serializers.ValidationError("Document size must be less than 5MB.")
+            # Validate file type
+            allowed_types = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg']
+            if hasattr(value, 'content_type') and value.content_type not in allowed_types:
+                raise serializers.ValidationError("Only PDF, PNG, and JPG files are allowed.")
+        return value
 
     def create(self, validated_data):
         request = self.context.get('request')
@@ -32,6 +54,7 @@ class DriverSerializer(serializers.ModelSerializer):
     vendor_details = UserSerializer(source='vendor', read_only=True)
     user_details = UserSerializer(source='user', read_only=True)
     assigned_vehicle_details = VehicleSerializer(source='assigned_vehicle', read_only=True)
+    license_document_url = serializers.SerializerMethodField()
     
     email = serializers.EmailField(write_only=True, required=False)
     password = serializers.CharField(write_only=True, required=False, style={'input_type': 'password'})
@@ -42,7 +65,28 @@ class DriverSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'user': {'read_only': True},
             'vendor': {'required': False},
+            'license_document': {'required': False, 'write_only': True},
         }
+
+    def get_license_document_url(self, obj):
+        if obj.license_document:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.license_document.url)
+            return obj.license_document.url
+        return None
+
+    def validate_license_document(self, value):
+        if value:
+            # 5MB limit
+            max_size = 5 * 1024 * 1024
+            if value.size > max_size:
+                raise serializers.ValidationError("Document size must be less than 5MB.")
+            # Validate file type
+            allowed_types = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg']
+            if hasattr(value, 'content_type') and value.content_type not in allowed_types:
+                raise serializers.ValidationError("Only PDF, PNG, and JPG files are allowed.")
+        return value
 
     def validate_assigned_vehicle(self, value):
         """Validate that a vehicle can have maximum 2 drivers assigned."""
@@ -318,3 +362,12 @@ class AlertSerializer(serializers.ModelSerializer):
     class Meta:
         model = Alert
         fields = '__all__'
+
+
+class ShiftTemplateSerializer(serializers.ModelSerializer):
+    """Serializer for ShiftTemplate model."""
+    
+    class Meta:
+        model = ShiftTemplate
+        fields = ['id', 'name', 'code', 'start_time', 'end_time', 'color', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']

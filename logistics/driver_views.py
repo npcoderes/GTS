@@ -603,7 +603,6 @@ class DriverTripViewSet(viewsets.ViewSet):
                     'vehicle': {
                         'id': active_trip.vehicle.id,
                         'registrationNo': active_trip.vehicle.registration_no,
-                        'capacity_kg': str(active_trip.vehicle.capacity_kg),
                     },
                     'started_at': active_trip.started_at.isoformat() if active_trip.started_at else None,
                     'sto_number': active_trip.sto_number,

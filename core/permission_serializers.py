@@ -13,7 +13,7 @@ class PermissionSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Permission
-        fields = ['id', 'code', 'name', 'description', 'category']
+        fields = ['id', 'code', 'name', 'description', 'category', 'platform']
         read_only_fields = ['id']
 
 
@@ -23,6 +23,7 @@ class RolePermissionSerializer(serializers.ModelSerializer):
     permission_code = serializers.CharField(source='permission.code', read_only=True)
     permission_name = serializers.CharField(source='permission.name', read_only=True)
     permission_category = serializers.CharField(source='permission.category', read_only=True)
+    permission_platform = serializers.CharField(source='permission.platform', read_only=True)
     role_code = serializers.CharField(source='role.code', read_only=True)
     role_name = serializers.CharField(source='role.name', read_only=True)
     
@@ -31,7 +32,7 @@ class RolePermissionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'role', 'role_code', 'role_name',
             'permission', 'permission_code', 'permission_name', 'permission_category',
-            'granted', 'created_at', 'updated_at'
+            'permission_platform', 'granted', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 

@@ -9,7 +9,7 @@ from .eic_views import (
     EICStockRequestViewSet, EICDashboardView, 
     EICDriverApprovalView, EICPermissionsView,
     EICNetworkOverviewView, EICReconciliationActionView, EICVehicleTrackingView, EICNetworkStationsView,EICNetworkTripsView,
-    EICIncomingStockRequestsView, EICAlertListView
+    EICIncomingStockRequestsView, EICAlertListView, EICShiftHistoryView
 )
 from .reconciliation_views import ReconciliationListView
 from .customer_views import (
@@ -30,6 +30,12 @@ from .ms_views import (
     MSClusterView, MSStockTransferHistoryByDBSView, MSPendingArrivalsView, MSFillResumeView
 )
 from .eic_management_views import EICVehicleQueueView, EICClusterViewSet, EICStockTransferMSDBSView, EICStockTransfersByDBSView
+from .timesheet_views import (
+    TimesheetView, TimesheetAssignView, TimesheetUpdateView, TimesheetDeleteView,
+    TimesheetCopyWeekView, TimesheetFillWeekView, TimesheetFillMonthView, TimesheetClearWeekView,
+    ShiftTemplateViewSet
+)
+from .token_views import DriverTokenViewSet, EICQueueView, EICQueueAllocationView
 # from .ocr_views import OCRExtractTextView
 # from .ocr_paddleocr_views import PaddleOCRExtractTextView
 
@@ -52,6 +58,10 @@ eic_router = DefaultRouter()
 eic_router.register(r'stock-requests', EICStockRequestViewSet, basename='eic-stock-requests')
 eic_router.register(r'clusters', EICClusterViewSet, basename='eic-clusters')
 
+# Shift Template Router
+template_router = DefaultRouter()
+template_router.register(r'shift-templates', ShiftTemplateViewSet, basename='shift-templates')
+
 # Driver Router
 router.register(r'driver-trips', DriverTripViewSet, basename='driver-trips')
 
@@ -62,6 +72,7 @@ urlpatterns = [
     path('eic/', include(eic_router.urls)),
     path('eic/dashboard', EICDashboardView.as_view(), name='eic-dashboard'),
     path('eic/driver-approvals/pending', EICDriverApprovalView.as_view(), name='eic-driver-approvals'),
+    path('eic/driver-approvals/history', EICShiftHistoryView.as_view(), name='eic-shift-history'),
     path('eic/permissions', EICPermissionsView.as_view(), name='eic-permissions'),
     path('eic/network-overview', EICNetworkOverviewView.as_view(), name='eic-network-overview'),
     path('eic/network-stations', EICNetworkStationsView.as_view(), name='eic-network-stations'),
@@ -75,8 +86,11 @@ urlpatterns = [
     path('eic/stock-transfers', EICStockTransfersByDBSView.as_view(), name='eic-stock-transfers'),
     path('eic/stock-transfers/ms-dbs', EICStockTransferMSDBSView.as_view(), name='eic-stock-transfers-ms-dbs'),
     path('eic/stock-transfers/by-dbs', EICStockTransfersByDBSView.as_view(), name='eic-stock-transfers-by-dbs'),
-
     
+    # EIC Vehicle Queue (Token Queue System)
+    path('eic/token-queue', EICQueueView.as_view(), name='eic-token-queue'),
+    path('eic/token-queue/allocate', EICQueueAllocationView.as_view(), name='eic-token-allocate'),
+
     # DBS API
     path('dbs/dashboard/', DBSDashboardView.as_view(), name='dbs-dashboard'),
     path('dbs/transfers', DBSStockTransferListView.as_view(), name='dbs-transfers'),
@@ -99,6 +113,12 @@ urlpatterns = [
     # Driver Notification Registration
     path('driver/notifications/register', DriverNotificationRegisterView.as_view(), name='driver-notif-register'),
     path('driver/notifications/unregister', DriverNotificationUnregisterView.as_view(), name='driver-notif-unregister'),
+    
+    # Driver Token Queue
+    path('driver/token/request', DriverTokenViewSet.as_view({'post': 'request'}), name='driver-token-request'),
+    path('driver/token/current', DriverTokenViewSet.as_view({'get': 'current'}), name='driver-token-current'),
+    path('driver/token/cancel', DriverTokenViewSet.as_view({'post': 'cancel'}), name='driver-token-cancel'),
+    path('driver/token/shift-details', DriverTokenViewSet.as_view({'get': 'shift_details'}), name='driver-shift-details'),
 
     # MS API
     path('ms/dashboard/', MSDashboardView.as_view(), name='ms-dashboard'),
@@ -152,4 +172,15 @@ urlpatterns = [
     # OCR
     # path('ocr/extract-text', OCRExtractTextView.as_view(), name='ocr-extract-text'),
     # path('ocr/extract-text-paddle', PaddleOCRExtractTextView.as_view(), name='ocr-extract-text-paddle'),
+
+    # Timesheet Management
+    path('', include(template_router.urls)),
+    path('timesheet/', TimesheetView.as_view(), name='timesheet'),
+    path('timesheet/assign/', TimesheetAssignView.as_view(), name='timesheet-assign'),
+    path('timesheet/update/', TimesheetUpdateView.as_view(), name='timesheet-update'),
+    path('timesheet/delete/', TimesheetDeleteView.as_view(), name='timesheet-delete'),
+    path('timesheet/copy-week/', TimesheetCopyWeekView.as_view(), name='timesheet-copy-week'),
+    path('timesheet/fill-week/', TimesheetFillWeekView.as_view(), name='timesheet-fill-week'),
+    path('timesheet/fill-month/', TimesheetFillMonthView.as_view(), name='timesheet-fill-month'),
+    path('timesheet/clear-week/', TimesheetClearWeekView.as_view(), name='timesheet-clear-week'),
 ]

@@ -23,7 +23,8 @@ class Command(BaseCommand):
                 defaults={
                     'name': perm_data['name'],
                     'description': perm_data['description'],
-                    'category': perm_data['category']
+                    'category': perm_data['category'],
+                    'platform': perm_data.get('platform', 'all')
                 }
             )
             

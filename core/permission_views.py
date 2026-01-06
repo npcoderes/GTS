@@ -194,6 +194,12 @@ class PermissionViewSet(viewsets.ModelViewSet):
         if category:
             queryset = queryset.filter(category=category)
         
+        # Filter by platform (dashboard, mobile, or all)
+        platform = self.request.query_params.get('platform')
+        if platform and platform != 'all':
+            # Include permissions for the specific platform + 'all' platform permissions
+            queryset = queryset.filter(platform__in=[platform, 'all'])
+        
         return queryset
 
 

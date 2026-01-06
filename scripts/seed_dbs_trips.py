@@ -31,7 +31,7 @@ def seed_data():
 
     vehicle, _ = Vehicle.objects.get_or_create(
         registration_no="GJ-01-AB-1234",
-        defaults={'capacity_kg': 1000, 'vendor': vendor}
+        defaults={'vendor': vendor}
     )
     
     driver, _ = Driver.objects.get_or_create(

@@ -17,6 +17,8 @@ import TransportAdminLogistics from './pages/TransportAdminLogistics';
 import VehicleManagement from './pages/VehicleManagement';
 import DriverManagement from './pages/DriverManagement';
 import ShiftManagement from './pages/ShiftManagement';
+import EICShiftApprovals from './pages/EICShiftApprovals';
+import TimesheetManagement from './pages/TimesheetManagement';
 import PermissionManagement from './pages/PermissionManagement';
 import Profile from './pages/Profile';
 import ForgotPassword from './pages/ForgotPassword';
@@ -138,6 +140,22 @@ const ThemedApp = () => {
               element={
                 <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
                   <PermissionManagement />
+                </RoleProtectedRoute>
+              }
+            />
+            <Route
+              path="eic-approvals"
+              element={
+                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
+                  <EICShiftApprovals />
+                </RoleProtectedRoute>
+              }
+            />
+            <Route
+              path="timesheet"
+              element={
+                <RoleProtectedRoute allowedRoles={[...ADMIN_ROLES, ...TRANSPORT_ROLES]}>
+                  <TimesheetManagement />
                 </RoleProtectedRoute>
               }
             />

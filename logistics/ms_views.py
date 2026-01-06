@@ -217,8 +217,7 @@ class MSFillPrefillView(views.APIView):
             'tripId': trip.id,
             'tokenId': token_id,
             'vehicle': {
-                'registrationNo': trip.vehicle.registration_no,
-                'capacity': trip.vehicle.capacity_kg
+                'registrationNo': trip.vehicle.registration_no
             },
             'driver': {
                 'name': trip.driver.user.full_name if trip.driver else 'Unknown',

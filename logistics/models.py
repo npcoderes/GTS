@@ -10,8 +10,13 @@ class Vehicle(models.Model):
     registration_no = models.CharField(max_length=50, unique=True)
     hcv_code = models.CharField(max_length=50, unique=True, null=True, blank=True)
     ms_home = models.ForeignKey(Station, on_delete=models.SET_NULL, null=True, blank=True, related_name='home_vehicles')
-    capacity_kg = models.DecimalField(max_digits=10, decimal_places=2)
     rfid_tag_id = models.CharField(max_length=100, null=True, blank=True)
+    registration_document = models.FileField(
+        upload_to='vehicles/documents/',
+        null=True,
+        blank=True,
+        help_text='Vehicle registration document (PDF, PNG, JPG). Max 5MB.'
+    )
 
     class Meta:
         db_table = 'vehicles'
@@ -39,6 +44,12 @@ class Driver(models.Model):
     license_verified = models.BooleanField(default=False)
     user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='driver_profile')
     assigned_vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_drivers')
+    license_document = models.FileField(
+        upload_to='drivers/licenses/',
+        null=True,
+        blank=True,
+        help_text='Driver license document (PDF, PNG, JPG). Max 5MB.'
+    )
 
     class Meta:
         db_table = 'drivers'
@@ -63,6 +74,8 @@ class Shift(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     is_recurring = models.BooleanField(default=False)
     recurrence_pattern = models.CharField(max_length=20, default='NONE') # DAILY, WEEKLY, etc.
+    shift_template = models.ForeignKey('ShiftTemplate', on_delete=models.SET_NULL, null=True, blank=True, related_name='shifts')
+    notes = models.TextField(null=True, blank=True)
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_shifts')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_shifts')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -131,9 +144,18 @@ class StockRequest(models.Model):
     assignment_mode = models.CharField(max_length=10, choices=ASSIGNMENT_MODE_CHOICES, null=True, blank=True)
     assignment_started_at = models.DateTimeField(null=True, blank=True)
     target_driver = models.ForeignKey('Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='offered_requests')
+    
+    # Queue fields for auto-allocation
+    queue_position = models.PositiveIntegerField(null=True, blank=True, help_text='Position in approval queue for FCFS ordering')
+    approved_at = models.DateTimeField(null=True, blank=True, help_text='When EIC approved this request')
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_stock_requests')
+    allocated_vehicle_token = models.ForeignKey('VehicleToken', on_delete=models.SET_NULL, null=True, blank=True, related_name='allocated_requests')
 
     class Meta:
         db_table = 'stock_requests'
+        indexes = [
+            models.Index(fields=['status', 'approved_at']),  # For queue queries
+        ]
 
 class Token(models.Model):
     """
@@ -152,6 +174,59 @@ class Token(models.Model):
 
     class Meta:
         db_table = 'tokens'
+
+
+class VehicleToken(models.Model):
+    """
+    Vehicle queue tokens at Mother Stations.
+    
+    Drivers request tokens when arriving at MS during active shift.
+    Token grants queue position (FCFS). When approved stock request 
+    exists, system auto-allocates to first waiting token.
+    
+    Daily sequence resets at midnight. Once allocated to a trip,
+    token is consumed and cannot be reused.
+    """
+    STATUS_CHOICES = [
+        ('WAITING', 'Waiting in Queue'),
+        ('ALLOCATED', 'Allocated to Trip'),
+        ('EXPIRED', 'Expired/Cancelled'),
+    ]
+    
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name='queue_tokens')
+    driver = models.ForeignKey('Driver', on_delete=models.CASCADE, related_name='queue_tokens')
+    ms = models.ForeignKey(Station, on_delete=models.CASCADE, related_name='vehicle_tokens')
+    shift = models.ForeignKey('Shift', on_delete=models.SET_NULL, null=True, blank=True, related_name='tokens')
+    
+    # Queue identification
+    token_no = models.CharField(max_length=30, unique=True, help_text='Format: MS{ms_id}-{date}-{seq}')
+    sequence_number = models.PositiveIntegerField(help_text='Daily sequence per MS, resets at midnight')
+    token_date = models.DateField(help_text='Date for sequence reset tracking')
+    
+    # Status tracking
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='WAITING')
+    issued_at = models.DateTimeField(auto_now_add=True)
+    allocated_at = models.DateTimeField(null=True, blank=True)
+    expired_at = models.DateTimeField(null=True, blank=True)
+    expiry_reason = models.CharField(max_length=100, null=True, blank=True)
+    
+    # Link to created trip when allocated
+    trip = models.OneToOneField('Trip', on_delete=models.SET_NULL, null=True, blank=True, related_name='vehicle_token')
+    
+    class Meta:
+        db_table = 'vehicle_tokens'
+        ordering = ['token_date', 'sequence_number']
+        indexes = [
+            models.Index(fields=['ms', 'status', 'token_date']),
+            models.Index(fields=['driver', 'status']),
+            models.Index(fields=['token_date', 'sequence_number']),
+        ]
+        # Ensure unique sequence per MS per day
+        unique_together = [['ms', 'token_date', 'sequence_number']]
+    
+    def __str__(self):
+        return f"{self.token_no} ({self.status})"
+
 
 class Trip(models.Model):
     """
@@ -482,3 +557,24 @@ class Alert(models.Model):
 
     class Meta:
         db_table = 'alerts'
+
+
+class ShiftTemplate(models.Model):
+    """
+    Reusable shift templates for quick assignment.
+    E.g., Morning (06:00-14:00), Night (22:00-06:00)
+    """
+    name = models.CharField(max_length=100)
+    code = models.CharField(max_length=50, unique=True)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    color = models.CharField(max_length=20, default='#1890ff')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'shift_templates'
+        ordering = ['start_time']
+
+    def __str__(self):
+        return f"{self.name} ({self.start_time.strftime('%H:%M')}-{self.end_time.strftime('%H:%M')})"

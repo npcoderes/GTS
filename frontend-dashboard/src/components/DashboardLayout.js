@@ -94,6 +94,8 @@ const DashboardLayout = () => {
     { key: '/dashboard/permissions', icon: <LockOutlined />, label: 'Permissions' },
     { key: '/dashboard/stations', icon: <AppstoreOutlined />, label: 'Stations' },
     { key: '/dashboard/logistics', icon: <DashboardOutlined />, label: 'Logistics' },
+    { key: '/dashboard/eic-approvals', icon: <SafetyOutlined />, label: 'Shift Approvals' },
+    { key: '/dashboard/timesheet', icon: <ScheduleOutlined />, label: 'Timesheet' },
     { key: '/dashboard/transport-logistics', icon: <DashboardOutlined />, label: 'Trips' },
     { key: '/dashboard/vehicles', icon: <CarOutlined />, label: 'Vehicles' },
     { key: '/dashboard/drivers', icon: <IdcardOutlined />, label: 'Drivers' },
@@ -108,6 +110,8 @@ const DashboardLayout = () => {
     '/dashboard/permissions',
     '/dashboard/stations',
     '/dashboard/logistics',
+    '/dashboard/eic-approvals',
+    '/dashboard/timesheet',
   ]);
 
   const transportAdminAllowed = new Set([
@@ -116,6 +120,7 @@ const DashboardLayout = () => {
     '/dashboard/vehicles',
     '/dashboard/drivers',
     '/dashboard/shifts',
+    '/dashboard/timesheet',
   ]);
 
   const vendorAllowed = new Set([
@@ -124,6 +129,7 @@ const DashboardLayout = () => {
     '/dashboard/vehicles',
     '/dashboard/drivers',
     '/dashboard/shifts',
+    '/dashboard/timesheet',
   ]);
 
   const menuItems = useMemo(() => {
@@ -131,6 +137,20 @@ const DashboardLayout = () => {
       // SUPER_ADMIN role - admin menu items
       if (roleCode === 'SUPER_ADMIN') {
         return superAdminAllowed.has(item.key);
+      }
+      // EIC role - logistics and shift approvals
+      if (roleCode === 'EIC') {
+        const eicAllowed = new Set([
+          '/dashboard',
+          '/dashboard/logistics',
+          '/dashboard/eic-approvals',
+          '/dashboard/timesheet',
+          '/dashboard/transport-logistics',
+          '/dashboard/vehicles',
+          '/dashboard/drivers',
+          '/dashboard/shifts',
+        ]);
+        return eicAllowed.has(item.key);
       }
       // TRANSPORT_ADMIN role - transport menu items
       if (roleCode === 'TRANSPORT_ADMIN') {
@@ -196,6 +216,8 @@ const DashboardLayout = () => {
       'permissions': 'Permission Management',
       'stations': 'Station Management',
       'logistics': 'Logistics Overview',
+      'eic-approvals': 'Shift Approvals',
+      'timesheet': 'Timesheet Management',
       'transport-logistics': 'My Trips',
       'vehicles': 'Vehicle Management',
       'drivers': 'Driver Management',
