@@ -9,7 +9,7 @@ from .eic_views import (
     EICStockRequestViewSet, EICDashboardView, 
     EICDriverApprovalView, EICPermissionsView,
     EICNetworkOverviewView, EICReconciliationActionView, EICVehicleTrackingView, EICNetworkStationsView,EICNetworkTripsView,
-    EICIncomingStockRequestsView, EICAlertListView, EICShiftHistoryView
+    EICIncomingStockRequestsView, EICAlertListView, EICShiftHistoryView, EICBulkApproveView
 )
 from .reconciliation_views import ReconciliationListView
 from .customer_views import (
@@ -28,6 +28,10 @@ from .ms_views import (
     MSFillPrefillView, MSFillStartView, MSFillEndView, MSStockTransferListView,
     MSTripScheduleView, MSDashboardView, MSConfirmArrivalView, MSConfirmFillingView,
     MSClusterView, MSStockTransferHistoryByDBSView, MSPendingArrivalsView, MSFillResumeView
+)
+from .scada_views import (
+    MSSCADAPrefillView, MSSCADAPostfillView,
+    DBSSCADAPrefillView, DBSSCADAPostfillView
 )
 from .eic_management_views import EICVehicleQueueView, EICClusterViewSet, EICStockTransferMSDBSView, EICStockTransfersByDBSView
 from .timesheet_views import (
@@ -72,6 +76,7 @@ urlpatterns = [
     path('eic/', include(eic_router.urls)),
     path('eic/dashboard', EICDashboardView.as_view(), name='eic-dashboard'),
     path('eic/driver-approvals/pending', EICDriverApprovalView.as_view(), name='eic-driver-approvals'),
+    path('eic/driver-approvals/bulk-approve', EICBulkApproveView.as_view(), name='eic-driver-bulk-approve'),
     path('eic/driver-approvals/history', EICShiftHistoryView.as_view(), name='eic-shift-history'),
     path('eic/permissions', EICPermissionsView.as_view(), name='eic-permissions'),
     path('eic/network-overview', EICNetworkOverviewView.as_view(), name='eic-network-overview'),
@@ -142,6 +147,10 @@ urlpatterns = [
     # MS Pending Arrivals (fallback for missed notifications)
     path('ms/pending-arrivals', MSPendingArrivalsView.as_view(), name='ms-pending-arrivals'),
     
+    # MS SCADA Integration (fetch automated meter readings)
+    path('ms/scada/prefill', MSSCADAPrefillView.as_view(), name='ms-scada-prefill'),
+    path('ms/scada/postfill', MSSCADAPostfillView.as_view(), name='ms-scada-postfill'),
+    
     # EIC Management
     path('eic/vehicle-queue', EICVehicleQueueView.as_view(), name='eic-vehicle-queue'),
 
@@ -159,6 +168,10 @@ urlpatterns = [
     path('dbs/stock-requests/decant/start', DBSStockRequestViewSet.as_view({'post': 'decant_start'}), name='dbs-decant-start'),
     path('dbs/stock-requests/decant/end', DBSStockRequestViewSet.as_view({'post': 'decant_end'}), name='dbs-decant-end'),
     path('dbs/stock-requests/decant/confirm', DBSStockRequestViewSet.as_view({'post': 'confirm_decanting'}), name='dbs-decant-confirm'),
+
+    # DBS SCADA Integration (fetch automated meter readings)
+    path('dbs/scada/prefill', DBSSCADAPrefillView.as_view(), name='dbs-scada-prefill'),
+    path('dbs/scada/postfill', DBSSCADAPostfillView.as_view(), name='dbs-scada-postfill'),
 
     # Customer API (DBS-facing) - DBS resolved from token
     path('customer/dashboard', CustomerDashboardView.as_view(), name='customer-dashboard'),

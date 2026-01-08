@@ -499,6 +499,18 @@ DEFAULT_PERMISSIONS = [
         'category': 'screens',
         'platform': 'all'
     },
+    
+    # =============================================
+    # STATION CAPABILITY PERMISSIONS
+    # These are used for station-level features/capabilities
+    # =============================================
+    {
+        'code': 'station_has_scada',
+        'name': 'Station Has SCADA',
+        'description': 'Station has SCADA integration enabled for automated meter readings',
+        'category': 'stations',
+        'platform': 'all'
+    },
 ]
 
 # Default role-permission mappings
@@ -550,3 +562,42 @@ DEFAULT_ROLE_PERMISSIONS = {
         'can_view_customer_stock_transfers',
     ],
 }
+
+class StationPermission(models.Model):
+    """
+    Station-specific permissions.
+    Used for permissions that apply to a specific station context (e.g. MS/DBS specific ops).
+    """
+    
+    station = models.ForeignKey(
+        'core.Station',
+        on_delete=models.CASCADE,
+        related_name='station_permissions',
+        verbose_name='Station',
+        help_text='Station this permission applies to'
+    )
+    permission = models.ForeignKey(
+        Permission,
+        on_delete=models.CASCADE,
+        related_name='station_permissions',
+        verbose_name='Permission',
+        help_text='Permission granted/revoked'
+    )
+    granted = models.BooleanField(
+        default=True,
+        verbose_name='Granted',
+        help_text='Whether this permission is granted'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = 'Station Permission'
+        verbose_name_plural = 'Station Permissions'
+        db_table = 'station_permissions'
+        unique_together = ['station', 'permission']
+        ordering = ['station__name', 'permission__category', 'permission__name']
+    
+    def __str__(self):
+        status = "granted" if self.granted else "denied"
+        return f"{self.station.name} - {self.permission.name} ({status})"

@@ -262,6 +262,13 @@ class Station(models.Model):
         verbose_name='Last SAP Sync',
         help_text='Timestamp of the last successful sync with SAP.',
     )
+    
+    # Bay Management (MS only)
+    no_of_bays = models.PositiveIntegerField(
+        default=2,
+        verbose_name='Number of Bays',
+        help_text='Number of filling bays available at this station (MS only).',
+    )
 
     class Meta:
         verbose_name = 'Station'

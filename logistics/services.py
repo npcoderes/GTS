@@ -3,34 +3,48 @@ from django.db.models import Q, Count
 from .models import Shift, Trip, StockRequest
 
 
-def find_active_shift(driver, check_time=None):
+def find_active_shift(driver, vehicle=None, check_time=None):
     """
     Find an active shift for a driver at a specific time.
     Handles both one-time and recurring shifts.
+    
+    Args:
+        driver: Driver instance
+        vehicle: (Optional) Vehicle instance to enforce shift vehicle match
+        check_time: (Optional) specific time to check
     """
     if not check_time:
         check_time = timezone.now()
         
+    # Build query filters
+    filters = {
+        'driver': driver,
+        'status': 'APPROVED',
+        'is_recurring': False,
+        'start_time__lte': check_time,
+        'end_time__gte': check_time
+    }
+    
+    if vehicle:
+        filters['vehicle'] = vehicle
+        
     # 1. Check One-time Shifts
-    one_time = Shift.objects.filter(
-        driver=driver,
-        status='APPROVED',
-        is_recurring=False,
-        start_time__lte=check_time,
-        end_time__gte=check_time
-    ).first()
+    one_time = Shift.objects.filter(**filters).first()
     
     if one_time:
         return one_time
         
     # 2. Check Recurring Shifts
     # Filter by APPROVED and is_recurring=True
-    # Then check time of day match
-    recurring_shifts = Shift.objects.filter(
-        driver=driver,
-        status='APPROVED',
-        is_recurring=True
-    )
+    recurring_filters = {
+        'driver': driver,
+        'status': 'APPROVED',
+        'is_recurring': True
+    }
+    if vehicle:
+        recurring_filters['vehicle'] = vehicle
+
+    recurring_shifts = Shift.objects.filter(**recurring_filters)
     
     check_time_obj = check_time.time() if hasattr(check_time, 'time') else check_time
     

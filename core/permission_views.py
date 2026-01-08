@@ -12,11 +12,12 @@ from django.utils import timezone
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 
-from .permission_models import Permission, RolePermission, UserPermission, DEFAULT_ROLE_PERMISSIONS
+from .permission_models import Permission, RolePermission, UserPermission, StationPermission, DEFAULT_ROLE_PERMISSIONS
 from .permission_serializers import (
     PermissionSerializer,
     RolePermissionSerializer, RolePermissionCreateSerializer,
     UserPermissionSerializer, UserPermissionCreateSerializer,
+    StationPermissionSerializer, StationPermissionCreateSerializer,
     RoleWithPermissionsSerializer
 )
 from .models import Role, User
@@ -111,13 +112,6 @@ def get_user_permissions_from_db(user):
         # Start with empty result - only add granted permissions
         result = {}
         
-        # Check if user is Super Admin - they get all permissions
-        is_super_admin = user.user_roles.filter(role__code='SUPER_ADMIN', active=True).exists()
-        if is_super_admin:
-            all_permissions = Permission.objects.all().values_list('code', flat=True)
-            result = {code: True for code in all_permissions}
-            return normalize_permissions(result)
-        
         # Get user's active role codes
         user_role_codes = list(user.user_roles.filter(active=True).values_list('role__code', flat=True))
         
@@ -152,6 +146,32 @@ def get_user_permissions_from_db(user):
     except Exception:
         # Table doesn't exist (migrations not run), return None to trigger fallback
         return None
+
+
+def station_has_scada(station):
+    """
+    Check if a station has SCADA capability enabled.
+    
+    Args:
+        station: Station object to check
+        
+    Returns:
+        bool: True if the station has SCADA permission granted, False otherwise
+    """
+    if not station:
+        return False
+    
+    try:
+        # Check if the station has the 'station_has_scada' permission granted
+        scada_perm = StationPermission.objects.filter(
+            station=station,
+            permission__code='station_has_scada',
+            granted=True
+        ).exists()
+        return scada_perm
+    except Exception:
+        # Table doesn't exist or other error
+        return False
 
 
 @api_view(['GET'])
@@ -210,6 +230,7 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
     """
     queryset = RolePermission.objects.all().select_related('role', 'permission')
     permission_classes = [IsAuthenticated]
+    pagination_class = None  # Disable pagination to return all records for count calculation
     
     def get_serializer_class(self):
         if self.action in ['create']:
@@ -291,6 +312,38 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
             'updated': updated
         })
 
+    @action(detail=False, methods=['get'], url_path='matrix')
+    def matrix(self, request):
+        """
+        Get ALL permissions with their status for a specific role.
+        Useful for UI toggles to show both enabled and disabled permissions.
+        
+        GET /api/role-permissions/matrix/?role_id=1
+        """
+        role_id = request.query_params.get('role_id')
+        if not role_id:
+            return validation_error_response('role_id is required')
+            
+        # Get all permissions first
+        all_perms = Permission.objects.all().order_by('platform', 'name')
+        
+        # Get existing role permissions
+        role_perms = RolePermission.objects.filter(role_id=role_id)
+        granted_map = {rp.permission.code: rp.granted for rp in role_perms}
+        
+        result = []
+        for perm in all_perms:
+            result.append({
+                'code': perm.code,
+                'name': perm.name,
+                'description': perm.description,
+                'category': perm.category,
+                'platform': perm.platform,
+                'granted': granted_map.get(perm.code, False)  # Default to False if not found
+            })
+            
+        return Response(result)
+
 
 class UserPermissionViewSet(viewsets.ModelViewSet):
     """
@@ -299,6 +352,7 @@ class UserPermissionViewSet(viewsets.ModelViewSet):
     """
     queryset = UserPermission.objects.all().select_related('user', 'permission', 'created_by')
     permission_classes = [IsAuthenticated]
+    pagination_class = None  # Disable pagination to return all records
     
     def get_serializer_class(self):
         if self.action in ['create']:
@@ -402,3 +456,120 @@ class RoleListWithPermissionsView(views.APIView):
         roles = Role.objects.all().order_by('name')
         serializer = RoleWithPermissionsSerializer(roles, many=True)
         return Response(serializer.data)
+
+
+class StationPermissionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for StationPermission CRUD operations.
+    Manages station-specific permissions.
+    """
+    queryset = StationPermission.objects.all().select_related('station', 'permission')
+    permission_classes = [IsAuthenticated]
+    pagination_class = None  # Disable pagination to return all records
+    
+    def get_serializer_class(self):
+        if self.action in ['create']:
+            return StationPermissionCreateSerializer
+        return StationPermissionSerializer
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # Filter by station
+        station_id = self.request.query_params.get('station')
+        if station_id:
+            queryset = queryset.filter(station_id=station_id)
+        
+        # Filter by permission
+        permission_id = self.request.query_params.get('permission')
+        if permission_id:
+            queryset = queryset.filter(permission_id=permission_id)
+        
+        return queryset
+    
+    @action(detail=False, methods=['post'], url_path='bulk-update')
+    def bulk_update(self, request):
+        """
+        Bulk update station permissions.
+        
+        POST /api/station-permissions/bulk-update/
+        {
+            "station_id": 1,
+            "permissions": {
+                "can_view_dbs_dashboard": true,
+                "can_view_ms_dashboard": false
+            }
+        }
+        """
+        station_id = request.data.get('station_id')
+        permissions_data = request.data.get('permissions', {})
+        
+        if not station_id:
+            return validation_error_response('station_id is required')
+        
+        # We need Station model. Assuming it's in core.models
+        from core.models import Station
+        try:
+            station = Station.objects.get(id=station_id)
+        except Station.DoesNotExist:
+            return not_found_response('Station not found')
+        
+        updated = []
+        created = []
+        
+        for perm_code, granted in permissions_data.items():
+            try:
+                permission = Permission.objects.get(code=perm_code)
+            except Permission.DoesNotExist:
+                continue
+            
+            station_perm, was_created = StationPermission.objects.update_or_create(
+                station=station,
+                permission=permission,
+                defaults={'granted': granted}
+            )
+            
+            if was_created:
+                created.append(perm_code)
+            else:
+                updated.append(perm_code)
+
+        return Response({
+            'success': True,
+            'station': station.name,
+            'created': created,
+            'updated': updated
+        })
+
+    @action(detail=False, methods=['get'], url_path='matrix')
+    def matrix(self, request):
+        """
+        Get ALL permissions with their status for a specific station.
+        Useful for UI toggles to show both enabled and disabled permissions.
+        
+        GET /api/station-permissions/matrix/?station_id=1
+        """
+        station_id = request.query_params.get('station_id')
+        if not station_id:
+            return validation_error_response('station_id is required')
+            
+        # Get all permissions first
+        all_perms = Permission.objects.all().order_by('category', 'name')
+        
+        # Get existing station permissions
+        station_perms = StationPermission.objects.filter(station_id=station_id)
+        granted_map = {sp.permission.code: sp.granted for sp in station_perms}
+        
+        result = []
+        for perm in all_perms:
+            result.append({
+                'code': perm.code,
+                'name': perm.name,
+                'description': perm.description,
+                'category': perm.category,
+                'platform': perm.platform,
+                'granted': granted_map.get(perm.code, False)  # Default to False if not found
+            })
+            
+        return Response(result)
+

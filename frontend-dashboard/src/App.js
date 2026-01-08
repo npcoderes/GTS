@@ -2,10 +2,11 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ConfigProvider, theme as antdTheme } from 'antd';
 import { AuthProvider } from './context/AuthContext';
+import { PermissionProvider } from './context/PermissionContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import PrivateRoute from './components/PrivateRoute';
-import RoleProtectedRoute from './components/RoleProtectedRoute';
+import PermissionProtectedRoute from './components/PermissionProtectedRoute';
 import DashboardLayout from './components/DashboardLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -26,11 +27,6 @@ import ResetPassword from './pages/ResetPassword';
 import SetupMPIN from './pages/SetupMPIN';
 import NotFound from './pages/NotFound';
 import './App.css';
-
-// Role definitions for route access
-const ADMIN_ROLES = ['SUPER_ADMIN', 'EIC'];
-const TRANSPORT_ROLES = ['TRANSPORT_ADMIN', 'VENDOR', 'SGL_TRANSPORT_VENDOR'];
-const ALL_ROLES = [...ADMIN_ROLES, ...TRANSPORT_ROLES];
 
 // Themed App wrapper
 const ThemedApp = () => {
@@ -58,7 +54,7 @@ const ThemedApp = () => {
           },
           Card: {
             colorBgContainer: theme.card.background,
-            boxShadowTertiary: theme.card.boxShadow, // Mapping our shadow to Card's tertiary shadow token
+            boxShadowTertiary: theme.card.boxShadow,
             colorBorderSecondary: theme.card.border,
           },
           Table: {
@@ -102,95 +98,97 @@ const ThemedApp = () => {
             <Route index element={<Dashboard />} />
             <Route path="profile" element={<Profile />} />
 
-            {/* Admin only routes */}
+            {/* Admin routes - Protected by permission */}
             <Route
               path="users"
               element={
-                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_admin_users">
                   <UserManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="roles"
               element={
-                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_admin_roles">
                   <RoleManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="stations"
               element={
-                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_admin_stations">
                   <StationManagement />
-                </RoleProtectedRoute>
-              }
-            />
-            <Route
-              path="logistics"
-              element={
-                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
-                  <LogisticsOverview />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="permissions"
               element={
-                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_admin_permissions">
                   <PermissionManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
+              }
+            />
+
+            {/* EIC routes */}
+            <Route
+              path="logistics"
+              element={
+                <PermissionProtectedRoute requiredPermission="can_view_eic_network_dashboard">
+                  <LogisticsOverview />
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="eic-approvals"
               element={
-                <RoleProtectedRoute allowedRoles={ADMIN_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_eic_driver_approvals">
                   <EICShiftApprovals />
-                </RoleProtectedRoute>
-              }
-            />
-            <Route
-              path="timesheet"
-              element={
-                <RoleProtectedRoute allowedRoles={[...ADMIN_ROLES, ...TRANSPORT_ROLES]}>
-                  <TimesheetManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
 
-            {/* Transport roles routes */}
+            {/* Transport routes */}
             <Route
               path="transport-logistics"
               element={
-                <RoleProtectedRoute allowedRoles={TRANSPORT_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_transport_logistics">
                   <TransportAdminLogistics />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="vehicles"
               element={
-                <RoleProtectedRoute allowedRoles={TRANSPORT_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_transport_vehicles">
                   <VehicleManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="drivers"
               element={
-                <RoleProtectedRoute allowedRoles={TRANSPORT_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_transport_drivers">
                   <DriverManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
               }
             />
             <Route
               path="shifts"
               element={
-                <RoleProtectedRoute allowedRoles={TRANSPORT_ROLES}>
+                <PermissionProtectedRoute requiredPermission="can_view_transport_timesheet">
                   <ShiftManagement />
-                </RoleProtectedRoute>
+                </PermissionProtectedRoute>
+              }
+            />
+            <Route
+              path="timesheet"
+              element={
+                <PermissionProtectedRoute requiredPermission="can_view_transport_timesheet">
+                  <TimesheetManagement />
+                </PermissionProtectedRoute>
               }
             />
           </Route>
@@ -208,7 +206,9 @@ function App() {
     <ErrorBoundary>
       <ThemeProvider>
         <AuthProvider>
-          <ThemedApp />
+          <PermissionProvider>
+            <ThemedApp />
+          </PermissionProvider>
         </AuthProvider>
       </ThemeProvider>
     </ErrorBoundary>

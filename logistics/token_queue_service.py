@@ -7,7 +7,7 @@ Handles token generation, queue matching, and automatic trip allocation.
 import logging
 from datetime import date
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from .models import VehicleToken, StockRequest, Trip, Token, Driver, Vehicle, Shift
@@ -62,25 +62,43 @@ class TokenQueueService:
         """
         with transaction.atomic():
             # 1. Validate active shift
-            active_shift = find_active_shift(driver)
+            active_shift = find_active_shift(driver, vehicle=vehicle)
             if not active_shift:
                 raise NoActiveShiftError(
-                    f"Driver {driver.full_name} has no active shift at this time"
+                    f"Driver {driver.full_name} has no active shift for vehicle {vehicle.registration_no} at this time"
                 )
             
-            # 2. Check driver doesn't already have a waiting token
+            # 2. Check if driver or vehicle is currently on a trip
+            # Active statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS
+            # Essentially anything that is NOT COMPLETED or CANCELLED or REJECTED
+            active_trip_exists = Trip.objects.filter(
+                (Q(driver=driver) | Q(vehicle=vehicle)),
+                ~Q(status__in=['COMPLETED', 'CANCELLED', 'REJECTED'])
+            ).exists()
+            
+            if active_trip_exists:
+                raise TokenQueueError("Driver or Vehicle is currently on an active trip")
+            
+            # 3. Check if driver already has a token (WAITING or ALLOCATED) for today
+            # If so, return that token instead of creating a new one
+            today = timezone.localdate()
             existing_token = VehicleToken.objects.filter(
                 driver=driver,
-                status='WAITING'
+                status__in=['WAITING', 'ALLOCATED'],
+                token_date=today
             ).first()
             
             if existing_token:
-                raise DriverAlreadyHasTokenError(
-                    f"Driver already has waiting token: {existing_token.token_no}"
-                )
+                logger.info(f"Returning existing token {existing_token.token_no} for driver {driver.full_name}")
+                # Trigger allocation check in case requests arrived while driver was away
+                if existing_token.status == 'WAITING':
+                    # Try to allocate immediately
+                    allocated_req = self._try_auto_allocate(ms)
+                    if allocated_req:
+                        existing_token.refresh_from_db()
+                return existing_token
             
-            # 3. Generate sequential token number
-            today = timezone.localdate()
+            # 4. Generate sequential token number
             sequence = self._get_next_sequence(ms, today)
             token_no = f"MS{ms.id}-{today.strftime('%Y%m%d')}-{sequence:04d}"
             
@@ -215,56 +233,38 @@ class TokenQueueService:
                 logger.debug(f"No approved requests waiting for MS {ms.name}")
                 return None
             
-            # Match found! Allocate token and create trip
-            trip = self._allocate_token_to_request(first_token, first_request)
+            # Match found! Allocate token and assign requests (Trip created later by driver)
+            allocated_req = self._allocate_token_to_request(first_token, first_request)
             
             logger.info(
-                f"Auto-allocated: Token {first_token.token_no} → "
-                f"Request #{first_request.id} (DBS: {first_request.dbs.name}) → "
-                f"Trip #{trip.id}"
+                f"Auto-allocated: Token {first_token.token_no} -> "
+                f"Request #{allocated_req.id} (DBS: {allocated_req.dbs.name}) -> "
+                f"Waiting for Driver Acceptance"
             )
             
-            return trip
+            return allocated_req
     
-    def _allocate_token_to_request(self, token: VehicleToken, stock_request: StockRequest) -> Trip:
+    def _allocate_token_to_request(self, token: VehicleToken, stock_request: StockRequest) -> StockRequest:
         """
-        Match token to stock request and create trip.
+        Match token to stock request and assign it (Trip created upon driver acceptance).
         
         Args:
             token: VehicleToken in WAITING status
             stock_request: StockRequest in APPROVED status
             
         Returns:
-            Created Trip instance
+            Updated StockRequest instance
         """
         now = timezone.now()
         
-        # 1. Create legacy Token for trip (backward compatibility)
-        legacy_token = Token.objects.create(
-            vehicle=token.vehicle,
-            ms=token.ms
-        )
-        
-        # 2. Create Trip
-        trip = Trip.objects.create(
-            stock_request=stock_request,
-            token=legacy_token,
-            vehicle=token.vehicle,
-            driver=token.driver,
-            ms=token.ms,
-            dbs=stock_request.dbs,
-            status='PENDING',
-            started_at=now
-        )
-        
-        # 3. Update VehicleToken
+        # 1. Update VehicleToken
         token.status = 'ALLOCATED'
         token.allocated_at = now
-        token.trip = trip
-        token.save(update_fields=['status', 'allocated_at', 'trip'])
+        # trip is NOT set yet - set when driver accepts
+        token.save(update_fields=['status', 'allocated_at'])
         
-        # 4. Update StockRequest
-        stock_request.status = 'ASSIGNED'
+        # 2. Update StockRequest
+        stock_request.status = 'ASSIGNING'
         stock_request.allocated_vehicle_token = token
         stock_request.target_driver = token.driver
         stock_request.assignment_started_at = now
@@ -272,20 +272,20 @@ class TokenQueueService:
             'status', 'allocated_vehicle_token', 'target_driver', 'assignment_started_at'
         ])
         
-        # 5. Send notification to driver
-        self._notify_driver_allocation(token.driver, trip, stock_request)
+        # 3. Send notification to driver
+        self._notify_driver_allocation(token.driver, stock_request)
         
-        return trip
+        return stock_request
     
-    def _notify_driver_allocation(self, driver: Driver, trip: Trip, stock_request: StockRequest):
-        """Notify driver about trip allocation via FCM."""
+    def _notify_driver_allocation(self, driver: Driver, stock_request: StockRequest):
+        """Notify driver about trip offer via FCM."""
         try:
             from core.notification_service import notification_service
             
             if driver.user:
                 notification_service.notify_trip_assignment(
                     driver=driver,
-                    trip=trip,
+                    trip=None, # No trip yet
                     stock_request=stock_request
                 )
         except Exception as e:

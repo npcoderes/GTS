@@ -9,7 +9,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from .models import VehicleToken, Driver, Vehicle
+from .models import VehicleToken, Driver, Vehicle, StockRequest, StockRequest
+
+# ... imports ...
+
+
+
 from .token_queue_service import (
     token_queue_service, TokenQueueError, NoActiveShiftError, DriverAlreadyHasTokenError
 )
@@ -62,9 +67,15 @@ class DriverTokenViewSet(viewsets.ViewSet):
             return validation_error_response("User is not a registered driver")
         
         # Validate vehicle
-        vehicle = driver.assigned_vehicle
-        if not vehicle:
-            return validation_error_response("Driver has no assigned vehicle")
+        # Determine vehicle from active shift
+        from .services import find_active_shift
+        from django.utils import timezone
+        
+        active_shift = find_active_shift(driver, check_time=timezone.now())
+        if not active_shift:
+             return validation_error_response("No active shift found. Please start a shift first.", code='NO_ACTIVE_SHIFT')
+             
+        vehicle = active_shift.vehicle
         
         # Validate MS
         try:
@@ -81,7 +92,7 @@ class DriverTokenViewSet(viewsets.ViewSet):
                 'token': {
                     'id': token.id,
                     'token_no': token.token_no,
-                    'sequence_number': token.sequence_number,
+                    'sequence_number': token.sequence_number,  # Queue number
                     'status': token.status,
                     'issued_at': token.issued_at.isoformat(),
                     'ms_id': token.ms_id,
@@ -89,28 +100,45 @@ class DriverTokenViewSet(viewsets.ViewSet):
                 }
             }
             
-            # Include trip info if allocated
-            if token.status == 'ALLOCATED' and token.trip:
-                response_data['token']['allocated_at'] = token.allocated_at.isoformat()
-                response_data['trip'] = {
-                    'id': token.trip.id,
-                    'dbs_id': token.trip.dbs_id,
-                    'dbs_name': token.trip.dbs.name if token.trip.dbs else None,
-                    'status': token.trip.status,
-                    'token_no': token.trip.token.token_no if token.trip.token else None,
-                }
-                response_data['message'] = 'Token allocated to trip immediately'
+            # Include allocated_at and trip details if allocated
+            if token.status == 'ALLOCATED':
+                response_data['token']['allocated_at'] = token.allocated_at.isoformat() if token.allocated_at else None
+                
+                # Get the allocated stock request
+                allocated_requests = StockRequest.objects.filter(
+                    allocated_vehicle_token=token,
+                    status='ASSIGNING'
+                ).select_related('dbs', 'dbs__parent_station').first()
+                
+                if allocated_requests:
+                    response_data['trip_offer'] = {
+                        'stock_request_id': allocated_requests.id,
+                        'ms': {
+                            'id': ms.id,
+                            'name': ms.name,
+                        },
+                        'dbs': {
+                            'id': allocated_requests.dbs.id,
+                            'name': allocated_requests.dbs.name,
+                            'address': allocated_requests.dbs.address or allocated_requests.dbs.city or '',
+                        },
+                        # 'quantity_kg': float(allocated_requests.requested_qty_kg) if allocated_requests.requested_qty_kg else None,
+                        'priority': allocated_requests.priority_preview,
+                        'message': f"Trip offer: {ms.name} → {allocated_requests.dbs.name}. Tap to accept."
+                    }
+                    response_data['message'] = 'Token allocated! Trip offer available.'
+                else:
+                    response_data['message'] = 'Token issued and allocated.'
             else:
-                response_data['message'] = 'Token issued. Waiting for stock request allocation.'
-                response_data['queue_position'] = token.sequence_number
+                response_data['message'] = f'Token issued. You are #{token.sequence_number} in queue.'
             
             return Response(response_data, status=status.HTTP_201_CREATED)
             
         except NoActiveShiftError as e:
-            return validation_error_response(str(e), error_code='NO_ACTIVE_SHIFT')
+            return validation_error_response(str(e), code='NO_ACTIVE_SHIFT')
         
         except DriverAlreadyHasTokenError as e:
-            return validation_error_response(str(e), error_code='TOKEN_EXISTS')
+            return validation_error_response(str(e), code='TOKEN_EXISTS')
         
         except TokenQueueError as e:
             return validation_error_response(str(e))
@@ -137,8 +165,7 @@ class DriverTokenViewSet(viewsets.ViewSet):
         
         if not token:
             return Response({
-                'has_token': False,
-                'message': 'No active token for today'
+                'has_token': False
             })
         
         response_data = {
@@ -146,22 +173,11 @@ class DriverTokenViewSet(viewsets.ViewSet):
             'token': {
                 'id': token.id,
                 'token_no': token.token_no,
-                'sequence_number': token.sequence_number,
+                'sequence_number': token.sequence_number,  # Queue number
                 'status': token.status,
-                'issued_at': token.issued_at.isoformat(),
-                'ms_id': token.ms_id,
                 'ms_name': token.ms.name if token.ms else None,
             }
         }
-        
-        if token.status == 'ALLOCATED' and token.trip:
-            response_data['token']['allocated_at'] = token.allocated_at.isoformat()
-            response_data['trip'] = {
-                'id': token.trip.id,
-                'dbs_id': token.trip.dbs_id,
-                'dbs_name': token.trip.dbs.name if token.trip.dbs else None,
-                'status': token.trip.status,
-            }
         
         return Response(response_data)
     
@@ -222,14 +238,16 @@ class DriverTokenViewSet(viewsets.ViewSet):
         except Driver.DoesNotExist:
             return validation_error_response("User is not a registered driver")
         
-        # Get active shift using existing service
+        # Get active shift for driver (regardless of assigned vehicle)
         from .services import find_active_shift
-        active_shift = find_active_shift(driver)
+        # CHECK TIME is required to filter shifts correctly
+        from django.utils import timezone
+        active_shift = find_active_shift(driver, check_time=timezone.now())
         
         if not active_shift:
             return Response({
                 'has_active_shift': False,
-                'message': 'No active shift at this time'
+                'message': 'No active shift for your assigned vehicle at this time'
             })
         
         # Build response with shift and vehicle details
@@ -240,9 +258,6 @@ class DriverTokenViewSet(viewsets.ViewSet):
                 'id': active_shift.id,
                 'start_time': active_shift.start_time.isoformat(),
                 'end_time': active_shift.end_time.isoformat(),
-                'status': active_shift.status,
-                'is_recurring': active_shift.is_recurring,
-                'recurrence_pattern': active_shift.recurrence_pattern,
             },
             'vehicle': {
                 'id': vehicle.id,
@@ -263,6 +278,30 @@ class DriverTokenViewSet(viewsets.ViewSet):
                 'id': vehicle.ms_home.id,
                 'name': vehicle.ms_home.name,
                 'code': vehicle.ms_home.code,
+            }
+        
+        # Add VehicleToken (queue token) if driver has one for today AND for the shift's vehicle
+        # This ensures the token matches the vehicle from the current active shift
+        from django.utils import timezone
+        current_queue_token = VehicleToken.objects.filter(
+            driver=driver,
+            vehicle=vehicle,  # Must match the shift's vehicle
+            status__in=['WAITING', 'ALLOCATED'],
+            token_date=timezone.localdate()
+        ).select_related('vehicle', 'ms', 'trip').first()
+        
+        response_data['has_queue_token'] = current_queue_token is not None
+        
+        if current_queue_token:
+            response_data['queue_token'] = {
+                'id': current_queue_token.id,
+                'token_no': current_queue_token.token_no,
+                'sequence_number': current_queue_token.sequence_number,
+                'status': current_queue_token.status,
+                'issued_at': current_queue_token.issued_at.isoformat(),
+                'ms_id': current_queue_token.ms_id,
+                'ms_name': current_queue_token.ms.name if current_queue_token.ms else None,
+                'allocated_at': current_queue_token.allocated_at.isoformat() if current_queue_token.allocated_at else None,
             }
         
         return Response(response_data)
@@ -364,12 +403,12 @@ class EICQueueAllocationView(views.APIView):
                         f"DBS {stock_request.dbs.name} is not under MS {token.ms.name}"
                     )
                 
-                trip = token_queue_service._allocate_token_to_request(token, stock_request)
+                allocated_req = token_queue_service._allocate_token_to_request(token, stock_request)
                 
                 return Response({
                     'success': True,
                     'message': 'Manual allocation successful',
-                    'trip_id': trip.id,
+                    'stock_request_id': allocated_req.id,
                     'token_no': token.token_no,
                     'driver_name': token.driver.full_name,
                     'dbs_name': stock_request.dbs.name,

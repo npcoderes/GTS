@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, Select, message, DatePicker, Alert, Typography, Card, Space, Tag, Upload, Tooltip } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, KeyOutlined, CopyOutlined, EyeOutlined, InboxOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, KeyOutlined, CopyOutlined, EyeOutlined, InboxOutlined, FileTextOutlined } from '@ant-design/icons';
 import apiClient from '../services/api';
 import moment from 'moment';
 
@@ -19,6 +19,8 @@ const DriverManagement = () => {
     const [editingDriver, setEditingDriver] = useState(null);
     const [vehicles, setVehicles] = useState([]);
     const [licenseFileList, setLicenseFileList] = useState([]);
+    const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
+    const [previewFile, setPreviewFile] = useState(null);
     const [form] = Form.useForm();
 
     useEffect(() => {
@@ -57,12 +59,11 @@ const DriverManagement = () => {
     };
 
     const generatePassword = () => {
-        const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-        let password = '';
-        for (let i = 0; i < 8; i++) {
-            password += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        return password;
+        // Generate simple, memorable passwords like: blue2026, red2025, etc.
+        const words = ['blue', 'red', 'green', 'star', 'moon', 'sun', 'sky', 'tree', 'rock', 'wave'];
+        const word = words[Math.floor(Math.random() * words.length)];
+        const year = new Date().getFullYear();
+        return `${word}${year}`;
     };
 
     const handleAdd = () => {
@@ -138,6 +139,25 @@ const DriverManagement = () => {
         setLicenseFileList(fileList.slice(-1)); // Keep only the last file
     };
 
+    const handlePreviewDocument = (file) => {
+        let previewUrl = null;
+        let fileType = null;
+        let fileName = file.name || 'Document';
+
+        if (file.url) {
+            // Existing uploaded file
+            previewUrl = file.url;
+            fileType = file.name?.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image';
+        } else if (file.originFileObj) {
+            // Newly selected file
+            previewUrl = URL.createObjectURL(file.originFileObj);
+            fileType = file.type?.startsWith('image/') ? 'image' : 'pdf';
+        }
+
+        setPreviewFile({ url: previewUrl, type: fileType, name: fileName });
+        setIsPreviewModalVisible(true);
+    };
+
     const handleModalOk = async () => {
         try {
             const values = await form.validateFields();
@@ -198,7 +218,16 @@ const DriverManagement = () => {
                     <Button
                         type="link"
                         icon={<EyeOutlined />}
-                        onClick={() => window.open(record.license_document_url, '_blank')}
+                        onClick={() => {
+                            const fileName = record.license_document_url.split('/').pop() || 'License Document';
+                            const fileType = fileName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image';
+                            setPreviewFile({
+                                url: record.license_document_url,
+                                type: fileType,
+                                name: `${record.full_name} - License Document`
+                            });
+                            setIsPreviewModalVisible(true);
+                        }}
                         size="small"
                     >
                         View
@@ -249,7 +278,7 @@ const DriverManagement = () => {
 
             <Alert
                 message="Driver Account Creation"
-                description="Provide an email and password for new drivers. These credentials will be used for the driver mobile app login."
+                description="Phone number is the primary login credential for drivers. Email is optional. A simple, memorable password will be auto-generated for the driver mobile app login."
                 type="info"
                 showIcon
                 style={{ marginBottom: 16 }}
@@ -318,14 +347,13 @@ const DriverManagement = () => {
                         <div style={{ display: 'flex', gap: 16 }}>
                             <Form.Item
                                 name="email"
-                                label="Login Email"
+                                label="Login Email (Optional)"
                                 rules={[
-                                    { required: true, message: 'Please enter email' },
                                     { type: 'email', message: 'Please enter valid email' }
                                 ]}
                                 style={{ flex: 1 }}
                             >
-                                <Input prefix={<UserOutlined />} placeholder="driver@example.com" />
+                                <Input prefix={<UserOutlined />} placeholder="driver@example.com (optional)" />
                             </Form.Item>
                             <Form.Item
                                 name="password"
@@ -379,6 +407,76 @@ const DriverManagement = () => {
                             onChange={handleLicenseChange}
                             maxCount={1}
                             accept=".pdf,.png,.jpg,.jpeg"
+                            onPreview={handlePreviewDocument}
+                            itemRender={(originNode, file) => {
+                                // Custom render to show preview
+                                const isPdf = file.name?.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+                                const isImage = file.type?.startsWith('image/');
+
+                                return (
+                                    <div style={{
+                                        padding: '8px',
+                                        border: '1px solid #d9d9d9',
+                                        borderRadius: '4px',
+                                        marginTop: '8px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '12px'
+                                    }}>
+                                        {isImage && file.url && (
+                                            <img
+                                                src={file.url}
+                                                alt="License preview"
+                                                style={{
+                                                    width: '60px',
+                                                    height: '60px',
+                                                    objectFit: 'cover',
+                                                    borderRadius: '4px'
+                                                }}
+                                            />
+                                        )}
+                                        {isImage && file.originFileObj && !file.url && (
+                                            <img
+                                                src={URL.createObjectURL(file.originFileObj)}
+                                                alt="License preview"
+                                                style={{
+                                                    width: '60px',
+                                                    height: '60px',
+                                                    objectFit: 'cover',
+                                                    borderRadius: '4px'
+                                                }}
+                                            />
+                                        )}
+                                        {isPdf && (
+                                            <FileTextOutlined style={{ fontSize: '32px', color: '#1890ff' }} />
+                                        )}
+                                        <div style={{ flex: 1 }}>
+                                            <div style={{ fontWeight: 500 }}>{file.name}</div>
+                                            {file.status === 'done' && (
+                                                <Tag color="success" style={{ marginTop: '4px' }}>Uploaded</Tag>
+                                            )}
+                                        </div>
+                                        <Space>
+                                            <Tooltip title="Preview Document">
+                                                <Button
+                                                    type="link"
+                                                    icon={<EyeOutlined />}
+                                                    onClick={() => handlePreviewDocument(file)}
+                                                >
+                                                    Preview
+                                                </Button>
+                                            </Tooltip>
+                                            <Button
+                                                type="link"
+                                                danger
+                                                onClick={() => setLicenseFileList([])}
+                                            >
+                                                Remove
+                                            </Button>
+                                        </Space>
+                                    </div>
+                                );
+                            }}
                         >
                             <p className="ant-upload-drag-icon">
                                 <InboxOutlined />
@@ -458,6 +556,52 @@ const DriverManagement = () => {
                             style={{ marginTop: 16 }}
                         />
                     </Card>
+                )}
+            </Modal>
+
+            {/* Document Preview Modal */}
+            <Modal
+                title={previewFile?.name || "Document Preview"}
+                open={isPreviewModalVisible}
+                onCancel={() => {
+                    setIsPreviewModalVisible(false);
+                    setPreviewFile(null);
+                }}
+                footer={[
+                    <Button key="close" onClick={() => {
+                        setIsPreviewModalVisible(false);
+                        setPreviewFile(null);
+                    }}>
+                        Close
+                    </Button>
+                ]}
+                width={800}
+                centered
+            >
+                {previewFile && (
+                    <div style={{ textAlign: 'center' }}>
+                        {previewFile.type === 'image' ? (
+                            <img
+                                src={previewFile.url}
+                                alt="Document preview"
+                                style={{
+                                    maxWidth: '100%',
+                                    maxHeight: '70vh',
+                                    objectFit: 'contain'
+                                }}
+                            />
+                        ) : (
+                            <iframe
+                                src={previewFile.url}
+                                title="PDF preview"
+                                style={{
+                                    width: '100%',
+                                    height: '70vh',
+                                    border: 'none'
+                                }}
+                            />
+                        )}
+                    </div>
                 )}
             </Modal>
         </div>

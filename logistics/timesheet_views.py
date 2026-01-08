@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.db.models import Q
 from datetime import datetime, timedelta
 import re
+from .eic_views import expire_old_pending_shifts
 
 from .models import Driver, Vehicle, Shift, ShiftTemplate
 from .serializers import ShiftTemplateSerializer
@@ -44,6 +45,9 @@ class TimesheetView(views.APIView):
         if not check_transport_permission(request.user):
             return Response({'error': 'Permission denied'}, status=403)
         
+        # Trigger expiration of old pending shifts
+        expire_old_pending_shifts()
+        
         # Parse start_date or default to current week start
         start_date_str = request.query_params.get('start_date')
         if start_date_str:
@@ -59,14 +63,31 @@ class TimesheetView(views.APIView):
         # Get drivers based on role
         role_codes = list(request.user.user_roles.filter(active=True).values_list('role__code', flat=True))
         
-        if 'SUPER_ADMIN' in role_codes or 'EIC' in role_codes:
+        is_vendor = 'SGL_TRANSPORT_VENDOR' in role_codes or 'VENDOR' in role_codes
+        is_admin_or_eic = 'SUPER_ADMIN' in role_codes or 'EIC' in role_codes
+        
+        if is_admin_or_eic:
             drivers = Driver.objects.all().select_related('assigned_vehicle')
-        elif 'SGL_TRANSPORT_VENDOR' in role_codes or 'VENDOR' in role_codes:
-            # Vendor sees only their drivers
+            
+            # Vendor Filter (Only for Admin/EIC)
+            vendor_id = request.query_params.get('vendor_id')
+            if vendor_id:
+                drivers = drivers.filter(vendor_id=vendor_id)
+                
+        elif is_vendor:
+            # Vendor sees only their drivers (Ignore vendor_id filter from params for security)
             drivers = Driver.objects.filter(vendor=request.user).select_related('assigned_vehicle')
         else:
             drivers = Driver.objects.all().select_related('assigned_vehicle')
-        
+
+        # Sidebar Search Filter (Name or Vehicle)
+        search_query = request.query_params.get('search')
+        if search_query:
+            drivers = drivers.filter(
+                Q(full_name__icontains=search_query) | 
+                Q(assigned_vehicle__registration_no__icontains=search_query)
+            )
+
         # Get shifts for the week
         shifts = Shift.objects.filter(
             start_time__date__gte=start_date,
@@ -78,21 +99,27 @@ class TimesheetView(views.APIView):
         shifts_by_driver = {}
         for shift in shifts:
             driver_id = shift.driver_id
-            shift_date = shift.start_time.date().isoformat()
+            
+            # Convert to local time for display/grouping
+            local_start = timezone.localtime(shift.start_time)
+            local_end = timezone.localtime(shift.end_time)
+            
+            shift_date = local_start.date().isoformat()
             
             if driver_id not in shifts_by_driver:
                 shifts_by_driver[driver_id] = {}
             
             shifts_by_driver[driver_id][shift_date] = {
                 'id': shift.id,
-                'start_time': shift.start_time.isoformat(),
-                'end_time': shift.end_time.isoformat(),
+                'start_time': local_start.isoformat(),
+                'end_time': local_end.isoformat(),
                 'status': shift.status,
                 'shift_template': shift.shift_template_id,
                 'template_name': shift.shift_template.name if shift.shift_template else None,
                 'vehicle': shift.vehicle_id,
                 'notes': shift.notes or '',
                 'created_by': shift.created_by.full_name if shift.created_by else 'System',
+                'rejection_reason': shift.rejection_reason or None,
             }
         
         # Build driver list
@@ -128,13 +155,24 @@ class TimesheetView(views.APIView):
         # Generate dates list
         dates = [(start_date + timedelta(days=i)).isoformat() for i in range(7)]
         
-        return Response({
+        response_data = {
             'start_date': start_date.isoformat(),
             'end_date': end_date.isoformat(),
             'dates': dates,
             'drivers': driver_list,
             'templates': template_list,
-        })
+        }
+        
+        # Add vendors list for Admin/EIC filters
+        if is_admin_or_eic:
+            vendors = User.objects.filter(
+                user_roles__role__code='SGL_TRANSPORT_VENDOR',
+                user_roles__active=True,
+                is_active=True
+            ).distinct().values('id', 'full_name', 'email')
+            response_data['vendors'] = list(vendors)
+            
+        return Response(response_data)
 
 
 class TimesheetAssignView(views.APIView):
@@ -208,7 +246,7 @@ class TimesheetAssignView(views.APIView):
         start_time = timezone.make_aware(start_time)
         end_time = timezone.make_aware(end_time)
         
-        # Check for existing shift on this date
+        # Check for existing shift on this date for the DRIVER
         existing = Shift.objects.filter(
             driver=driver,
             start_time__date=shift_date
@@ -218,6 +256,25 @@ class TimesheetAssignView(views.APIView):
             return Response({
                 'error': 'Shift already exists for this driver on this date',
                 'existing_shift_id': existing.id
+            }, status=409)
+        
+        # Check for existing shift on this date for the VEHICLE (with different driver)
+        # This prevents overlapping shifts - vehicle can have multiple non-overlapping shifts per day
+        # Time overlap: new shift overlaps if new_start < existing_end AND new_end > existing_start
+        vehicle_conflict = Shift.objects.filter(
+            vehicle=vehicle,
+            status__in=['PENDING', 'APPROVED'],  # Only active shifts
+            start_time__lt=end_time,  # Existing starts before new ends
+            end_time__gt=start_time,  # Existing ends after new starts
+        ).exclude(driver=driver).first()
+        
+        if vehicle_conflict:
+            conflict_start = timezone.localtime(vehicle_conflict.start_time).strftime('%H:%M')
+            conflict_end = timezone.localtime(vehicle_conflict.end_time).strftime('%H:%M')
+            return Response({
+                'error': f'Vehicle {vehicle.registration_no} is already assigned to {vehicle_conflict.driver.full_name} from {conflict_start} to {conflict_end}',
+                'conflicting_driver': vehicle_conflict.driver.full_name,
+                'conflicting_shift_id': vehicle_conflict.id
             }, status=409)
         
         # Create shift
@@ -374,12 +431,13 @@ class TimesheetCopyWeekView(views.APIView):
         
         created_count = 0
         skipped_count = 0
+        vehicle_conflicts = 0
         
         for shift in source_shifts:
             new_start = shift.start_time + timedelta(days=day_diff)
             new_end = shift.end_time + timedelta(days=day_diff)
             
-            # Check if shift already exists
+            # Check if shift already exists for driver
             existing = Shift.objects.filter(
                 driver=shift.driver,
                 start_time__date=new_start.date()
@@ -387,6 +445,18 @@ class TimesheetCopyWeekView(views.APIView):
             
             if existing:
                 skipped_count += 1
+                continue
+            
+            # Check if vehicle has overlapping shift with another driver
+            vehicle_conflict = Shift.objects.filter(
+                vehicle=shift.vehicle,
+                status__in=['PENDING', 'APPROVED'],
+                start_time__lt=new_end,
+                end_time__gt=new_start,
+            ).exclude(driver=shift.driver).exists()
+            
+            if vehicle_conflict:
+                vehicle_conflicts += 1
                 continue
             
             Shift.objects.create(
@@ -401,10 +471,17 @@ class TimesheetCopyWeekView(views.APIView):
             )
             created_count += 1
         
+        message = f'Copied {created_count} shifts'
+        if skipped_count > 0:
+            message += f', skipped {skipped_count} (driver already has shift)'
+        if vehicle_conflicts > 0:
+            message += f', {vehicle_conflicts} vehicle conflicts (vehicle assigned to another driver)'
+        
         return Response({
-            'message': f'Copied {created_count} shifts, skipped {skipped_count} (already exist)',
+            'message': message,
             'created': created_count,
-            'skipped': skipped_count
+            'skipped': skipped_count,
+            'vehicle_conflicts': vehicle_conflicts
         })
 
 
@@ -412,6 +489,7 @@ class TimesheetFillWeekView(views.APIView):
     """
     POST /api/timesheet/fill-week/
     Fill entire week with a template for selected drivers.
+    Supports optional vehicle_id parameter.
     """
     permission_classes = [IsAuthenticated]
     
@@ -421,6 +499,7 @@ class TimesheetFillWeekView(views.APIView):
         
         driver_ids = request.data.get('driver_ids', [])
         template_id = request.data.get('template_id')
+        vehicle_id = request.data.get('vehicle_id')  # Optional: override assigned vehicle
         # Support both old and new param names
         week_start = request.data.get('start_date') or request.data.get('week_start')  # YYYY-MM-DD
         skip_existing = request.data.get('skip_existing', True)
@@ -436,15 +515,26 @@ class TimesheetFillWeekView(views.APIView):
         except ValueError:
             return Response({'error': 'Invalid date format'}, status=400)
         
+        # Get vehicle if specified
+        specified_vehicle = None
+        if vehicle_id:
+            try:
+                specified_vehicle = Vehicle.objects.get(id=vehicle_id)
+            except Vehicle.DoesNotExist:
+                return Response({'error': 'Specified vehicle not found'}, status=404)
+        
         drivers = Driver.objects.filter(id__in=driver_ids).select_related('assigned_vehicle')
         
         created_count = 0
         skipped_count = 0
+        vehicle_conflicts = 0
+        no_vehicle_count = 0
         
         for driver in drivers:
-            vehicle = driver.assigned_vehicle
+            # Use specified vehicle if provided, otherwise use driver's assigned vehicle
+            vehicle = specified_vehicle if specified_vehicle else driver.assigned_vehicle
             if not vehicle:
-                skipped_count += 7
+                no_vehicle_count += 7
                 continue
             
             for i in range(7):
@@ -465,6 +555,18 @@ class TimesheetFillWeekView(views.APIView):
                 if template.end_time < template.start_time:
                     end_time += timedelta(days=1)
                 
+                # Check if vehicle has overlapping shift with another driver
+                vehicle_conflict = Shift.objects.filter(
+                    vehicle=vehicle,
+                    status__in=['PENDING', 'APPROVED'],
+                    start_time__lt=end_time,
+                    end_time__gt=start_time,
+                ).exclude(driver=driver).exists()
+                
+                if vehicle_conflict:
+                    vehicle_conflicts += 1
+                    continue
+                
                 Shift.objects.create(
                     driver=driver,
                     vehicle=vehicle,
@@ -476,10 +578,20 @@ class TimesheetFillWeekView(views.APIView):
                 )
                 created_count += 1
         
+        message = f'Created {created_count} shifts'
+        if skipped_count > 0:
+            message += f', skipped {skipped_count} (driver already has shift)'
+        if vehicle_conflicts > 0:
+            message += f', {vehicle_conflicts} vehicle conflicts (vehicle assigned to another driver)'
+        if no_vehicle_count > 0:
+            message += f', {no_vehicle_count} skipped (no vehicle assigned)'
+        
         return Response({
-            'message': f'Created {created_count} shifts, skipped {skipped_count}',
+            'message': message,
             'created': created_count,
-            'skipped': skipped_count
+            'skipped': skipped_count,
+            'vehicle_conflicts': vehicle_conflicts,
+            'no_vehicle': no_vehicle_count
         })
 
 
@@ -487,6 +599,7 @@ class TimesheetFillMonthView(views.APIView):
     """
     POST /api/timesheet/fill-month/
     Fill entire month with a template for selected drivers.
+    Supports optional vehicle_id parameter.
     """
     permission_classes = [IsAuthenticated]
     
@@ -496,6 +609,7 @@ class TimesheetFillMonthView(views.APIView):
         
         driver_ids = request.data.get('driver_ids', [])
         template_id = request.data.get('template_id')
+        vehicle_id = request.data.get('vehicle_id')  # Optional: override assigned vehicle
         # Support year/month params OR month_start date string
         year = request.data.get('year')
         month = request.data.get('month')
@@ -518,6 +632,14 @@ class TimesheetFillMonthView(views.APIView):
         except ValueError:
             return Response({'error': 'Invalid date format'}, status=400)
         
+        # Get vehicle if specified
+        specified_vehicle = None
+        if vehicle_id:
+            try:
+                specified_vehicle = Vehicle.objects.get(id=vehicle_id)
+            except Vehicle.DoesNotExist:
+                return Response({'error': 'Specified vehicle not found'}, status=404)
+        
         # Calculate end of month
         if start_date.month == 12:
             end_date = start_date.replace(year=start_date.year + 1, month=1, day=1) - timedelta(days=1)
@@ -530,11 +652,15 @@ class TimesheetFillMonthView(views.APIView):
         
         created_count = 0
         skipped_count = 0
+        vehicle_conflicts = 0
+        no_vehicle_count = 0
+        weekend_skips = 0
         
         for driver in drivers:
-            vehicle = driver.assigned_vehicle
+            # Use specified vehicle if provided, otherwise use driver's assigned vehicle
+            vehicle = specified_vehicle if specified_vehicle else driver.assigned_vehicle
             if not vehicle:
-                skipped_count += days_in_month
+                no_vehicle_count += days_in_month
                 continue
             
             for i in range(days_in_month):
@@ -542,7 +668,7 @@ class TimesheetFillMonthView(views.APIView):
                 
                 # Skip weekends if include_weekends is False
                 if not include_weekends and shift_date.weekday() >= 5:  # 5=Sat, 6=Sun
-                    skipped_count += 1
+                    weekend_skips += 1
                     continue
                 
                 # Skip if existing shift found and skip_existing is True
@@ -560,6 +686,18 @@ class TimesheetFillMonthView(views.APIView):
                 if template.end_time < template.start_time:
                     end_time += timedelta(days=1)
                 
+                # Check if vehicle has overlapping shift with another driver
+                vehicle_conflict = Shift.objects.filter(
+                    vehicle=vehicle,
+                    status__in=['PENDING', 'APPROVED'],
+                    start_time__lt=end_time,
+                    end_time__gt=start_time,
+                ).exclude(driver=driver).exists()
+                
+                if vehicle_conflict:
+                    vehicle_conflicts += 1
+                    continue
+                
                 Shift.objects.create(
                     driver=driver,
                     vehicle=vehicle,
@@ -571,10 +709,23 @@ class TimesheetFillMonthView(views.APIView):
                 )
                 created_count += 1
         
+        message = f'Created {created_count} shifts for month'
+        if skipped_count > 0:
+            message += f', skipped {skipped_count} (driver already has shift)'
+        if vehicle_conflicts > 0:
+            message += f', {vehicle_conflicts} vehicle conflicts (vehicle assigned to another driver)'
+        if no_vehicle_count > 0:
+            message += f', {no_vehicle_count} skipped (no vehicle assigned)'
+        if weekend_skips > 0:
+            message += f', {weekend_skips} weekend days skipped'
+        
         return Response({
-            'message': f'Created {created_count} shifts for month, skipped {skipped_count}',
+            'message': message,
             'created': created_count,
-            'skipped': skipped_count
+            'skipped': skipped_count,
+            'vehicle_conflicts': vehicle_conflicts,
+            'no_vehicle': no_vehicle_count,
+            'weekend_skips': weekend_skips
         })
 
 

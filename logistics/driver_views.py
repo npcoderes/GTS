@@ -10,7 +10,7 @@ from core.error_response import (
     error_response, validation_error_response, not_found_response,
     unauthorized_response, forbidden_response, server_error_response
 )
-from .models import StockRequest, Trip, Shift, Token
+from .models import StockRequest, Trip, Shift, Token, VehicleToken
 import json
 import logging
 import uuid 
@@ -95,7 +95,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     'name': ms.name if ms else None,
                     'address': ms.address if ms else None,
                 } if ms else None,
-                'quantity_kg': float(req.requested_qty_kg) if req.requested_qty_kg else None,
+                # 'quantity_kg': float(req.requested_qty_kg) if req.requested_qty_kg else None,
                 'priority': req.priority_preview,
                 'assigned_at': req.assignment_started_at.isoformat() if req.assignment_started_at else None,
                 'remaining_seconds': int(remaining_seconds),
@@ -133,19 +133,26 @@ class DriverTripViewSet(viewsets.ViewSet):
                 
                 # 1. Validate Status - Must be ASSIGNING
                 if stock_req.status != 'ASSIGNING':
-                    return validation_error_response('Trip is no longer available', extra_data={'current_status': stock_req.status})
+                    return validation_error_response('Trip is no longer available')
                     
                 # 2. Validate Timeout
                 if stock_req.assignment_started_at:
                     elapsed = (timezone.now() - stock_req.assignment_started_at).total_seconds()
                     if elapsed > DRIVER_ASSIGNMENT_TIMEOUT:
                         # Reset to PENDING for EIC to reassign
+                        # Also expire the token so it doesn't stay ALLOCATED
+                        if stock_req.allocated_vehicle_token:
+                            stock_req.allocated_vehicle_token.status = 'EXPIRED'
+                            stock_req.allocated_vehicle_token.expiry_reason = 'OFFER_TIMEOUT'
+                            stock_req.allocated_vehicle_token.save()
+
                         stock_req.status = 'PENDING'
                         stock_req.assignment_started_at = None
                         stock_req.target_driver = None
+                        stock_req.allocated_vehicle_token = None
                         stock_req.save()
                         logger.warning(f"Driver {driver.id} tried to accept expired offer for StockRequest {stock_req.id} (elapsed: {elapsed:.0f}s)")
-                        return validation_error_response('Offer has expired. The 5-minute acceptance window has passed.', extra_data={'expired': True})
+                        return validation_error_response('Offer has expired. The 5-minute acceptance window has passed.')
                      
                 # 3. Validate Target Driver (Must be assigned to this driver)
                 if stock_req.target_driver and stock_req.target_driver != driver:
@@ -153,7 +160,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                     
                 # 4. Find driver's active shift for vehicle
                 from .services import find_active_shift
-                active_shift = find_active_shift(driver, timezone.now())
+                active_shift = find_active_shift(driver, check_time=timezone.now())
                 
                 # Was:
                 # active_shift = Shift.objects.filter(
@@ -178,6 +185,9 @@ class DriverTripViewSet(viewsets.ViewSet):
                     # token_no auto-generated
                 )
                 
+                # Check for allocated VehicleToken (from queue system)
+                vehicle_token = stock_req.allocated_vehicle_token if hasattr(stock_req, 'allocated_vehicle_token') else None
+                
                 # 6. Create Trip
                 trip = Trip.objects.create(
                     stock_request=stock_req,
@@ -195,6 +205,14 @@ class DriverTripViewSet(viewsets.ViewSet):
                 # 7. Update StockRequest
                 stock_req.status = 'ASSIGNED'
                 stock_req.save()
+                
+                # Update VehicleToken if exists
+                if vehicle_token:
+                    vehicle_token.trip = trip
+                    # Status remains ALLOCATED until trip is completed? 
+                    # Or maybe we change it to 'ON_TRIP'? 
+                    # Existing flow used 'ALLOCATED', let's stick to that for now.
+                    vehicle_token.save(update_fields=['trip'])
                 
                 # 8. Send notification to DBS Operator
                 try:
@@ -296,17 +314,27 @@ class DriverTripViewSet(viewsets.ViewSet):
                 
                 # Validate status
                 if stock_req.status != 'ASSIGNING':
-                    return validation_error_response('Trip is no longer available for rejection', extra_data={'current_status': stock_req.status})
+                    return validation_error_response('Trip is no longer available for rejection')
                 
                 # Validate target driver
                 if stock_req.target_driver and stock_req.target_driver != driver:
                     return forbidden_response('This trip was not offered to you')
                 
                 # Reset the stock request for EIC to reassign
+                # Reset the stock request for EIC to reassign
                 stock_req.status = 'PENDING'
                 stock_req.assignment_started_at = None
                 stock_req.target_driver = None
                 stock_req.assignment_mode = None
+                
+                # Handle VehicleToken cleanup if allocated
+                if hasattr(stock_req, 'allocated_vehicle_token') and stock_req.allocated_vehicle_token:
+                    token = stock_req.allocated_vehicle_token
+                    token.status = 'WAITING'
+                    token.allocated_at = None
+                    token.save(update_fields=['status', 'allocated_at'])
+                    
+                    stock_req.allocated_vehicle_token = None
                 stock_req.save()
                 
                 # Notify EIC about rejection
@@ -550,7 +578,7 @@ class DriverTripViewSet(viewsets.ViewSet):
         # Fallback: No token provided OR token didn't find a trip - find any active trip for this driver
         if not active_trip:
             # Active statuses = all except COMPLETED and CANCELLED
-            active_statuses = ['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED']
+            active_statuses = ['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED','FILLED']
             
             active_trip = Trip.objects.filter(
                 driver=driver,
@@ -629,6 +657,11 @@ class DriverTripViewSet(viewsets.ViewSet):
         reading_val = request.data.get('reading')
         photo_base64 = request.data.get('photoBase64') # Not saving yet
         
+        print(f"CONFIRM READING Request: Token={token_val}, Station={station_type}, Type={reading_type}, Confirmed={request.data.get('confirmed')}")
+
+        if not station_type:
+            return validation_error_response('stationType (MS or DBS) is required')
+        
         try:
             trip = Trip.objects.get(driver=driver, token__token_no=token_val)
             
@@ -680,7 +713,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                         # Update step tracking
                         # trip.status = 'FILLING'
                         if trip.update_step(3):
-                            trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'ms_pre_photo_uploaded': bool(photo_file)}
+                            trip.step_data = {**trip.step_data, 'ms_pre_reading_done': True, 'driver_ms_pre_reading_confirmed': True}
                         trip.save()
                     elif reading_type == 'post':
                         # filling.postfill_pressure_bar = reading_val
@@ -688,7 +721,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                         if photo_file:
                             filling.postfill_photo = photo_file
                         # Update step tracking
-                        trip.step_data = {**trip.step_data, 'ms_post_reading_done': True, 'ms_post_photo_uploaded': bool(photo_file)}
+                        trip.step_data = {**trip.step_data, 'ms_post_reading_done': True, 'driver_ms_post_reading_confirmed': True}
 
                         if request.data.get('confirmed'):
                             filling.confirmed_by_driver = request.user
@@ -731,7 +764,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                         # trip.status = 'AT_DBS'
                         trip.dbs_arrival_at = timezone.now()
                         if trip.update_step(5):
-                            trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'dbs_pre_photo_uploaded': bool(photo_file)}
+                            trip.step_data = {**trip.step_data, 'dbs_pre_reading_done': True, 'driver_dbs_pre_reading_confirmed': True}
                         trip.save()
                     elif reading_type == 'post':
                         # decanting.post_dec_reading = reading_val
@@ -739,7 +772,7 @@ class DriverTripViewSet(viewsets.ViewSet):
                         if photo_file:
                             decanting.post_decant_photo = photo_file
                         # Update step tracking
-                        trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True, 'dbs_post_photo_uploaded': bool(photo_file)}
+                        trip.step_data = {**trip.step_data, 'dbs_post_reading_done': True, 'driver_dbs_post_reading_confirmed': True}
 
                         if request.data.get('confirmed'):
                             decanting.confirmed_by_driver = request.user

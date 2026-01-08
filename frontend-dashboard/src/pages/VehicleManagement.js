@@ -15,6 +15,8 @@ const VehicleManagement = () => {
     const [stations, setStations] = useState([]);
     const [stationsLoading, setStationsLoading] = useState(false);
     const [documentFileList, setDocumentFileList] = useState([]);
+    const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
+    const [previewFile, setPreviewFile] = useState(null);
     const [form] = Form.useForm();
 
     useEffect(() => {
@@ -155,6 +157,25 @@ const VehicleManagement = () => {
         setDocumentFileList(fileList.slice(-1)); // Keep only the last file
     };
 
+    const handlePreviewDocument = (file) => {
+        let previewUrl = null;
+        let fileType = null;
+        let fileName = file.name || 'Document';
+
+        if (file.url) {
+            // Existing uploaded file
+            previewUrl = file.url;
+            fileType = file.name?.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image';
+        } else if (file.originFileObj) {
+            // Newly selected file
+            previewUrl = URL.createObjectURL(file.originFileObj);
+            fileType = file.type?.startsWith('image/') ? 'image' : 'pdf';
+        }
+
+        setPreviewFile({ url: previewUrl, type: fileType, name: fileName });
+        setIsPreviewModalVisible(true);
+    };
+
     const columns = [
         {
             title: 'Registration No',
@@ -173,7 +194,16 @@ const VehicleManagement = () => {
                     <Button
                         type="link"
                         icon={<EyeOutlined />}
-                        onClick={() => window.open(record.registration_document_url, '_blank')}
+                        onClick={() => {
+                            const fileName = record.registration_document_url.split('/').pop() || 'Registration Document';
+                            const fileType = fileName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image';
+                            setPreviewFile({
+                                url: record.registration_document_url,
+                                type: fileType,
+                                name: `${record.registration_no} - Registration Document`
+                            });
+                            setIsPreviewModalVisible(true);
+                        }}
                         size="small"
                     >
                         View
@@ -269,6 +299,76 @@ const VehicleManagement = () => {
                             onChange={handleDocumentChange}
                             maxCount={1}
                             accept=".pdf,.png,.jpg,.jpeg"
+                            onPreview={handlePreviewDocument}
+                            itemRender={(originNode, file) => {
+                                // Custom render to show preview
+                                const isPdf = file.name?.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+                                const isImage = file.type?.startsWith('image/');
+
+                                return (
+                                    <div style={{
+                                        padding: '8px',
+                                        border: '1px solid #d9d9d9',
+                                        borderRadius: '4px',
+                                        marginTop: '8px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '12px'
+                                    }}>
+                                        {isImage && file.url && (
+                                            <img
+                                                src={file.url}
+                                                alt="Registration preview"
+                                                style={{
+                                                    width: '60px',
+                                                    height: '60px',
+                                                    objectFit: 'cover',
+                                                    borderRadius: '4px'
+                                                }}
+                                            />
+                                        )}
+                                        {isImage && file.originFileObj && !file.url && (
+                                            <img
+                                                src={URL.createObjectURL(file.originFileObj)}
+                                                alt="Registration preview"
+                                                style={{
+                                                    width: '60px',
+                                                    height: '60px',
+                                                    objectFit: 'cover',
+                                                    borderRadius: '4px'
+                                                }}
+                                            />
+                                        )}
+                                        {isPdf && (
+                                            <FileTextOutlined style={{ fontSize: '32px', color: '#1890ff' }} />
+                                        )}
+                                        <div style={{ flex: 1 }}>
+                                            <div style={{ fontWeight: 500 }}>{file.name}</div>
+                                            {file.status === 'done' && (
+                                                <Tag color="success" style={{ marginTop: '4px' }}>Uploaded</Tag>
+                                            )}
+                                        </div>
+                                        <Space>
+                                            <Tooltip title="Preview Document">
+                                                <Button
+                                                    type="link"
+                                                    icon={<EyeOutlined />}
+                                                    onClick={() => handlePreviewDocument(file)}
+                                                >
+                                                    Preview
+                                                </Button>
+                                            </Tooltip>
+                                            <Button
+                                                type="link"
+                                                danger
+                                                onClick={() => setDocumentFileList([])}
+                                            >
+                                                Remove
+                                            </Button>
+                                        </Space>
+                                    </div>
+                                );
+                            }}
                         >
                             <p className="ant-upload-drag-icon">
                                 <InboxOutlined />
@@ -280,6 +380,52 @@ const VehicleManagement = () => {
                         </Dragger>
                     </Form.Item>
                 </Form>
+            </Modal>
+
+            {/* Document Preview Modal */}
+            <Modal
+                title={previewFile?.name || "Document Preview"}
+                open={isPreviewModalVisible}
+                onCancel={() => {
+                    setIsPreviewModalVisible(false);
+                    setPreviewFile(null);
+                }}
+                footer={[
+                    <Button key="close" onClick={() => {
+                        setIsPreviewModalVisible(false);
+                        setPreviewFile(null);
+                    }}>
+                        Close
+                    </Button>
+                ]}
+                width={800}
+                centered
+            >
+                {previewFile && (
+                    <div style={{ textAlign: 'center' }}>
+                        {previewFile.type === 'image' ? (
+                            <img
+                                src={previewFile.url}
+                                alt="Document preview"
+                                style={{
+                                    maxWidth: '100%',
+                                    maxHeight: '70vh',
+                                    objectFit: 'contain'
+                                }}
+                            />
+                        ) : (
+                            <iframe
+                                src={previewFile.url}
+                                title="PDF preview"
+                                style={{
+                                    width: '100%',
+                                    height: '70vh',
+                                    border: 'none'
+                                }}
+                            />
+                        )}
+                    </div>
+                )}
             </Modal>
         </div>
     );

@@ -37,7 +37,7 @@ The Token Queue System manages vehicle queues at Mother Stations (MS). Drivers r
 #### Request Token
 ```
 POST /api/driver/token/request
-Authorization: Bearer <driver_token>
+Authorization: TOKEN <driver_token>
 
 Payload:
 {
@@ -86,7 +86,7 @@ Error Responses:
 #### Get Current Token
 ```
 GET /api/driver/token/current
-Authorization: Bearer <driver_token>
+Authorization: TOKEN <driver_token>
 
 Response:
 {

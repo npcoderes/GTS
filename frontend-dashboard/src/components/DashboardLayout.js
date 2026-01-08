@@ -14,6 +14,7 @@ import {
   Switch,
   Tooltip,
   Drawer,
+  Spin,
 } from 'antd';
 import {
   UserOutlined,
@@ -38,21 +39,107 @@ import {
 } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { usePermissions } from '../context/PermissionContext';
 import './DashboardLayout.css';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 const { useBreakpoint } = Grid;
 
+/**
+ * Menu items with permission requirements
+ * Each item can have:
+ * - permission: single permission code required
+ * - permissions: array of permission codes (user needs ANY of them)
+ * - requireAll: if true with permissions array, user needs ALL
+ */
+const ALL_MENU_ITEMS = [
+  {
+    key: '/dashboard',
+    icon: <HomeOutlined />,
+    label: 'Dashboard',
+    permission: null, // Always visible
+  },
+  // Admin Section
+  {
+    key: '/dashboard/users',
+    icon: <TeamOutlined />,
+    label: 'Users',
+    permission: 'can_view_admin_users',
+  },
+  {
+    key: '/dashboard/roles',
+    icon: <SafetyOutlined />,
+    label: 'Roles',
+    permission: 'can_view_admin_roles',
+  },
+  {
+    key: '/dashboard/permissions',
+    icon: <LockOutlined />,
+    label: 'Permissions',
+    permission: 'can_view_admin_permissions',
+  },
+  {
+    key: '/dashboard/stations',
+    icon: <AppstoreOutlined />,
+    label: 'Stations',
+    permission: 'can_view_admin_stations',
+  },
+  // EIC Section
+  {
+    key: '/dashboard/logistics',
+    icon: <DashboardOutlined />,
+    label: 'Logistics',
+    permission: 'can_view_eic_network_dashboard',
+  },
+  {
+    key: '/dashboard/eic-approvals',
+    icon: <SafetyOutlined />,
+    label: 'Shift Approvals',
+    permission: 'can_view_eic_driver_approvals',
+  },
+  // Transport Section
+  {
+    key: '/dashboard/transport-logistics',
+    icon: <DashboardOutlined />,
+    label: 'Trips',
+    permission: 'can_view_transport_logistics',
+  },
+  {
+    key: '/dashboard/vehicles',
+    icon: <CarOutlined />,
+    label: 'Vehicles',
+    permission: 'can_view_transport_vehicles',
+  },
+  {
+    key: '/dashboard/drivers',
+    icon: <IdcardOutlined />,
+    label: 'Drivers',
+    permission: 'can_view_transport_drivers',
+  },
+  //   key: '/dashboard/shifts',
+  //   icon: <ScheduleOutlined />,
+  //   label: 'Shifts',
+  //   permission: 'can_view_transport_timesheet',
+  // },
+  {
+    key: '/dashboard/timesheet',
+    icon: <ScheduleOutlined />,
+    label: 'Shift Timeline',
+    permission: 'can_view_transport_timesheet',
+  },
+];
+
 const DashboardLayout = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileDrawerVisible, setMobileDrawerVisible] = useState(false);
   const { user, logout } = useAuth();
   const { theme, isDark, toggleTheme } = useTheme();
+  const { hasPermission, loading: permissionsLoading } = usePermissions();
   const navigate = useNavigate();
   const location = useLocation();
   const screens = useBreakpoint();
-  
+
   // Determine if we're on mobile/tablet
   const isMobile = !screens.lg;
 
@@ -70,99 +157,80 @@ const DashboardLayout = () => {
     }
   }, [isMobile]);
 
+  // Get dynamic page title based on permissions
+  const getPageTitle = useCallback(() => {
+    if (hasPermission('can_view_admin_permissions')) {
+      return 'Admin Dashboard | GTS';
+    }
+    if (hasPermission('can_view_eic_network_dashboard')) {
+      return 'EIC Dashboard | GTS';
+    }
+    if (hasPermission('can_view_transport_logistics')) {
+      return 'Transport Dashboard | GTS';
+    }
+    if (hasPermission('can_view_ms_dashboard')) {
+      return 'MS Operator | GTS';
+    }
+    if (hasPermission('can_view_dbs_dashboard')) {
+      return 'DBS Operator | GTS';
+    }
+    if (hasPermission('can_view_customer_dashboard')) {
+      return 'Customer Portal | GTS';
+    }
+    if (hasPermission('can_view_driver_dashboard')) {
+      return 'Driver Portal | GTS';
+    }
+    return 'GTS Dashboard';
+  }, [hasPermission]);
+
+  // Update browser tab title dynamically based on permissions
+  useEffect(() => {
+    if (!permissionsLoading) {
+      document.title = getPageTitle();
+    }
+  }, [permissionsLoading, getPageTitle]);
+
   const roleCode = (user?.role || '').toUpperCase();
 
-  // Get sidebar title based on role
-  const getSidebarTitle = () => {
-    if (roleCode === 'SUPER_ADMIN' || roleCode === 'EIC') {
-      return collapsed ? 'GTS' : 'GTS Admin';
+  // Get sidebar title based on user's permissions (not hardcoded role)
+  const getSidebarTitle = useCallback(() => {
+    if (collapsed) return 'GTS';
+
+    // Priority-based title from permissions
+    if (hasPermission('can_view_admin_permissions')) {
+      return 'Admin Dashboard';
     }
-    if (roleCode === 'TRANSPORT_ADMIN') {
-      return collapsed ? 'GTS' : 'Transport Admin';
+    if (hasPermission('can_view_eic_network_dashboard')) {
+      return 'EIC Dashboard';
     }
-    if (roleCode === 'VENDOR' || roleCode === 'SGL_TRANSPORT_VENDOR') {
-      return collapsed ? 'GTS' : 'Transport Vendor';
+    if (hasPermission('can_view_transport_logistics')) {
+      return 'Transport Dashboard';
     }
-    return collapsed ? 'GTS' : 'GTS Dashboard';
-  };
+    if (hasPermission('can_view_ms_dashboard')) {
+      return 'MS Operator';
+    }
+    if (hasPermission('can_view_dbs_dashboard')) {
+      return 'DBS Operator';
+    }
+    if (hasPermission('can_view_customer_dashboard')) {
+      return 'Customer Portal';
+    }
+    if (hasPermission('can_view_driver_dashboard')) {
+      return 'Driver Portal';
+    }
+    return 'GTS Dashboard';
+  }, [collapsed, hasPermission]);
 
-  // Role-based navigation: Transport Vendors see a trimmed menu focused on fleet/driver ops
-  const baseMenu = [
-    { key: '/dashboard', icon: <HomeOutlined />, label: 'Dashboard' },
-    { key: '/dashboard/users', icon: <TeamOutlined />, label: 'Users' },
-    { key: '/dashboard/roles', icon: <SafetyOutlined />, label: 'Roles' },
-    { key: '/dashboard/permissions', icon: <LockOutlined />, label: 'Permissions' },
-    { key: '/dashboard/stations', icon: <AppstoreOutlined />, label: 'Stations' },
-    { key: '/dashboard/logistics', icon: <DashboardOutlined />, label: 'Logistics' },
-    { key: '/dashboard/eic-approvals', icon: <SafetyOutlined />, label: 'Shift Approvals' },
-    { key: '/dashboard/timesheet', icon: <ScheduleOutlined />, label: 'Timesheet' },
-    { key: '/dashboard/transport-logistics', icon: <DashboardOutlined />, label: 'Trips' },
-    { key: '/dashboard/vehicles', icon: <CarOutlined />, label: 'Vehicles' },
-    { key: '/dashboard/drivers', icon: <IdcardOutlined />, label: 'Drivers' },
-    { key: '/dashboard/shifts', icon: <ScheduleOutlined />, label: 'Shifts' },
-  ];
-
-  // Define menu access for different roles
-  const superAdminAllowed = new Set([
-    '/dashboard',
-    '/dashboard/users',
-    '/dashboard/roles',
-    '/dashboard/permissions',
-    '/dashboard/stations',
-    '/dashboard/logistics',
-    '/dashboard/eic-approvals',
-    '/dashboard/timesheet',
-  ]);
-
-  const transportAdminAllowed = new Set([
-    '/dashboard',
-    '/dashboard/transport-logistics',
-    '/dashboard/vehicles',
-    '/dashboard/drivers',
-    '/dashboard/shifts',
-    '/dashboard/timesheet',
-  ]);
-
-  const vendorAllowed = new Set([
-    '/dashboard',
-    '/dashboard/transport-logistics',
-    '/dashboard/vehicles',
-    '/dashboard/drivers',
-    '/dashboard/shifts',
-    '/dashboard/timesheet',
-  ]);
-
+  // Filter menu items based on user permissions
   const menuItems = useMemo(() => {
-    return baseMenu.filter((item) => {
-      // SUPER_ADMIN role - admin menu items
-      if (roleCode === 'SUPER_ADMIN') {
-        return superAdminAllowed.has(item.key);
-      }
-      // EIC role - logistics and shift approvals
-      if (roleCode === 'EIC') {
-        const eicAllowed = new Set([
-          '/dashboard',
-          '/dashboard/logistics',
-          '/dashboard/eic-approvals',
-          '/dashboard/timesheet',
-          '/dashboard/transport-logistics',
-          '/dashboard/vehicles',
-          '/dashboard/drivers',
-          '/dashboard/shifts',
-        ]);
-        return eicAllowed.has(item.key);
-      }
-      // TRANSPORT_ADMIN role - transport menu items
-      if (roleCode === 'TRANSPORT_ADMIN') {
-        return transportAdminAllowed.has(item.key);
-      }
-      // VENDOR role - limited menu items
-      if (roleCode === 'VENDOR' || roleCode === 'SGL_TRANSPORT_VENDOR') {
-        return vendorAllowed.has(item.key);
-      }
-      return true; // other roles see everything else
+    return ALL_MENU_ITEMS.filter((item) => {
+      // No permission required - always visible
+      if (!item.permission) return true;
+
+      // Check if user has the required permission
+      return hasPermission(item.permission);
     });
-  }, [roleCode]);
+  }, [hasPermission]);
 
   const userMenuItems = [
     {
@@ -253,18 +321,24 @@ const DashboardLayout = () => {
         </Typography.Title>
       </div>
 
-      <Menu
-        theme={isDark ? 'dark' : 'light'}
-        mode="inline"
-        selectedKeys={[location.pathname]}
-        items={menuItems}
-        onClick={handleMenuClick}
-        style={{
-          background: theme.sider.background,
-          borderRight: 'none',
-          padding: '16px 8px',
-        }}
-      />
+      {permissionsLoading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}>
+          <Spin size="small" />
+        </div>
+      ) : (
+        <Menu
+          theme={isDark ? 'dark' : 'light'}
+          mode="inline"
+          selectedKeys={[location.pathname]}
+          items={menuItems}
+          onClick={handleMenuClick}
+          style={{
+            background: theme.sider.background,
+            borderRight: 'none',
+            padding: '16px 8px',
+          }}
+        />
+      )}
     </>
   );
 
@@ -305,16 +379,16 @@ const DashboardLayout = () => {
           onClose={() => setMobileDrawerVisible(false)}
           open={mobileDrawerVisible}
           width={280}
-          bodyStyle={{ 
-            padding: 0, 
-            background: theme.sider.background 
+          bodyStyle={{
+            padding: 0,
+            background: theme.sider.background
           }}
           headerStyle={{ display: 'none' }}
           className="mobile-sidebar-drawer"
         >
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
             alignItems: 'center',
             padding: '12px 16px',
             borderBottom: theme.sider.borderRight
@@ -322,25 +396,31 @@ const DashboardLayout = () => {
             <Typography.Title level={4} style={{ color: theme.sider.textColor, margin: 0, fontWeight: 700 }}>
               {getSidebarTitle()}
             </Typography.Title>
-            <Button 
-              type="text" 
-              icon={<CloseOutlined />} 
+            <Button
+              type="text"
+              icon={<CloseOutlined />}
               onClick={() => setMobileDrawerVisible(false)}
               style={{ color: theme.sider.textColor }}
             />
           </div>
-          <Menu
-            theme={isDark ? 'dark' : 'light'}
-            mode="inline"
-            selectedKeys={[location.pathname]}
-            items={menuItems}
-            onClick={handleMenuClick}
-            style={{
-              background: theme.sider.background,
-              borderRight: 'none',
-              padding: '8px',
-            }}
-          />
+          {permissionsLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}>
+              <Spin size="small" />
+            </div>
+          ) : (
+            <Menu
+              theme={isDark ? 'dark' : 'light'}
+              mode="inline"
+              selectedKeys={[location.pathname]}
+              items={menuItems}
+              onClick={handleMenuClick}
+              style={{
+                background: theme.sider.background,
+                borderRight: 'none',
+                padding: '8px',
+              }}
+            />
+          )}
         </Drawer>
       )}
 
@@ -355,7 +435,7 @@ const DashboardLayout = () => {
           style={{
             background: theme.header.background,
             backdropFilter: theme.header.backdropFilter,
-            WebkitBackdropFilter: theme.header.backdropFilter, // Safari support
+            WebkitBackdropFilter: theme.header.backdropFilter,
             boxShadow: theme.header.boxShadow,
             borderBottom: 'none',
             position: 'sticky',
@@ -378,25 +458,6 @@ const DashboardLayout = () => {
           </div>
 
           <div className="header-right">
-            {/* Theme Toggle */}
-            {/* <Tooltip title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}>
-              <Button
-                type="text"
-                icon={isDark ? <SunOutlined /> : <MoonOutlined />}
-                onClick={toggleTheme}
-                style={{
-                  fontSize: 18,
-                  width: 40,
-                  height: 40,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: isDark ? '#FCD34D' : '#64748B',
-                  marginRight: 8,
-                }}
-              />
-            </Tooltip> */}
-
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" arrow={{ pointAtCenter: true }}>
               <div className="user-profile" role="button" style={{
                 padding: '4px 8px',

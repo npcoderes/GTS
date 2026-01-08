@@ -50,7 +50,7 @@ run(
 time.sleep(2)
 
 # 6. Frontend
-frontend_dir = os.path.join(BASE_DIR, "..", "frontend-dashboard")
+frontend_dir = os.path.join(BASE_DIR,"frontend-dashboard")
 run(
     cmd="npm run start",
     cwd=frontend_dir,

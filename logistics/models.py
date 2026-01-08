@@ -65,6 +65,7 @@ class Shift(models.Model):
         ('PENDING', 'Pending'),
         ('APPROVED', 'Approved'),
         ('REJECTED', 'Rejected'),
+        ('EXPIRED', 'Expired'),
     ]
 
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='shifts')
@@ -236,7 +237,7 @@ class Trip(models.Model):
         ('PENDING', 'Pending'),
         ('AT_MS', 'At MS'),
         # ('FILLING', 'Filling'),
-        # ('FILLED', 'Filled'),
+        ('FILLED', 'Filled'),
         # ('DISPATCHED', 'Dispatched'),
         ('IN_TRANSIT', 'In Transit'),
         ('AT_DBS', 'At DBS'),

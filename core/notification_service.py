@@ -146,8 +146,40 @@ class NotificationService:
             return {'status': 'sent', 'message_id': response}
             
         except Exception as e:
-            logger.error(f"FCM send error: {e}")
-            return {'status': 'failed', 'error': str(e)}
+            error_str = str(e).lower()
+            
+            # Check if error indicates invalid/expired token
+            # Common FCM errors for invalid tokens:
+            # - "Requested entity was not found"
+            # - "registration token is invalid"
+            # - "The registration token is not a valid FCM registration token"
+            invalid_token_indicators = [
+                'not found',
+                'invalid',
+                'unregistered',
+                'registration token'
+            ]
+            
+            is_invalid_token = any(indicator in error_str for indicator in invalid_token_indicators)
+            
+            if is_invalid_token:
+                # Automatically deactivate this token
+                try:
+                    from core.notification_models import DeviceToken
+                    device_token = DeviceToken.objects.filter(token=token, is_active=True).first()
+                    if device_token:
+                        device_token.is_active = False
+                        device_token.save(update_fields=['is_active'])
+                        logger.warning(f"Deactivated invalid FCM token for user {device_token.user.email} (token: {token[:20]}...): {e}")
+                    else:
+                        logger.error(f"FCM send error for unknown token ({token[:20]}...): {e}")
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to deactivate invalid token: {cleanup_error}")
+            else:
+                # Other error (network, permission, etc.)
+                logger.error(f"FCM send error: {e}")
+            
+            return {'status': 'failed', 'error': str(e), 'invalid_token': is_invalid_token}
     
     def send_to_user(self, user, title, body, data=None, notification_type='general'):
         """
@@ -175,6 +207,7 @@ class NotificationService:
         # Send to all devices
         results = []
         sent_count = 0
+        invalid_token_count = 0
         
         for device in device_tokens:
             result = self.send_to_device(
@@ -188,6 +221,8 @@ class NotificationService:
             
             if result['status'] == 'sent':
                 sent_count += 1
+            elif result.get('invalid_token'):
+                invalid_token_count += 1
         
         # Log the notification
         NotificationLog.objects.create(
@@ -200,12 +235,21 @@ class NotificationService:
             sent_at=timezone.now()
         )
 
-        logger.info(f"Notification sent to {sent_count}/{len(results)} devices for {user.email}")
+        # Enhanced logging with invalid token info
+        total_devices = len(results)
+        if invalid_token_count > 0:
+            logger.info(
+                f"Notification sent to {sent_count}/{total_devices} devices for {user.email} "
+                f"({invalid_token_count} invalid tokens auto-deactivated)"
+            )
+        else:
+            logger.info(f"Notification sent to {sent_count}/{total_devices} devices for {user.email}")
         
         return {
             'status': 'sent' if sent_count > 0 else 'failed',
             'sent_count': sent_count,
-            'total_devices': len(results),
+            'total_devices': total_devices,
+            'invalid_tokens': invalid_token_count,
             'results': results
         }
     
@@ -231,24 +275,52 @@ class NotificationService:
     # ==========================================
     
     def notify_trip_assignment(self, driver, trip, stock_request):
-        """Notify driver about a new trip assignment."""
-        from logistics.models import Token as TripToken
+        """Notify driver about a new trip assignment.
         
-        trip_token = TripToken.objects.filter(
-            vehicle=trip.vehicle
-        ).order_by('-issued_at').first()
+        Handles cases where ``trip`` may be ``None`` (e.g., during token allocation
+        before a ``Trip`` instance exists). Falls back to safe defaults and includes
+        the latest driver token if available.
+        """
+        from logistics.models import Token as TripToken, VehicleToken
+        
+        # Choose a token for the payload
+        trip_token = None
+        vehicle_token = None
+        
+        if trip:
+            # Trip exists - get the trip's Token
+            trip_token = TripToken.objects.filter(vehicle=trip.vehicle).order_by('-issued_at').first()
+        else:
+            # No trip yet - get driver's allocated VehicleToken
+            vehicle_token = VehicleToken.objects.filter(
+                driver=driver,
+                status='ALLOCATED'
+            ).order_by('-allocated_at').first()
+        
+        # Build payload safely handling None trip
+        data_payload = {
+            'tripId': str(trip.id) if trip else '',
+            'stockRequestId': str(stock_request.id),
+            'msName': trip.ms.name if trip else (stock_request.dbs.parent_station.name if stock_request.dbs and stock_request.dbs.parent_station else ''),
+            'dbsName': trip.dbs.name if trip else (stock_request.dbs.name if stock_request.dbs else ''),
+            'tokenId': str(trip_token.id) if trip_token else (str(vehicle_token.id) if vehicle_token else ''),
+            'tokenNumber': trip_token.token_no if trip_token else (vehicle_token.token_no if vehicle_token else ''),
+        }
+        
+        # Choose appropriate body message
+        if trip:
+            body_text = f"Trip from {trip.ms.name} to {trip.dbs.name}. Tap to accept."
+        else:
+            # Build message from stock_request
+            ms_name = stock_request.dbs.parent_station.name if stock_request.dbs and stock_request.dbs.parent_station else "MS"
+            dbs_name = stock_request.dbs.name if stock_request.dbs else "DBS"
+            body_text = f"New trip offer: {ms_name} → {dbs_name}. Tap to accept."
         
         return self.send_to_user(
             user=driver.user,
             title="New Trip Assignment",
-            body=f"Trip from {trip.ms.name} to {trip.dbs.name}. Tap to accept.",
-            data={
-                'tripId': str(trip.id),
-                'stockRequestId': str(stock_request.id),
-                'msName': trip.ms.name,
-                'dbsName': trip.dbs.name,
-                'tokenId': str(trip_token.id) if trip_token else None,
-            },
+            body=body_text,
+            data=data_payload,
             notification_type='trip_assignment'
         )
     

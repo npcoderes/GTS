@@ -6,11 +6,11 @@ const BASE_URL = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.r
 // Create axios instance
 const api = axios.create({
   baseURL: API_URL,
-  headers: {  
+  headers: {
     'Content-Type': 'application/json',
     "ngrok-skip-browser-warning": "true",
-    
-  },  
+
+  },
 });
 
 // Request interceptor to add auth token
@@ -114,6 +114,9 @@ export const stationsAPI = {
 export const permissionsAPI = {
   // Get all permission definitions
   getAll: () => api.get('/permissions/'),
+  createPermission: (data) => api.post('/permissions/', data),
+  updatePermission: (id, data) => api.put(`/permissions/${id}/`, data),
+  deletePermission: (id) => api.delete(`/permissions/${id}/`),
 
   // Get current user's computed permissions
   getUserPermissions: () => api.get('/auth/permissions/'),
@@ -123,6 +126,7 @@ export const permissionsAPI = {
 
   // Role permissions
   getRolePermissions: (roleId) => api.get('/role-permissions/', roleId ? { params: { role: roleId } } : {}),
+  getRolePermissionMatrix: (roleId) => api.get('/role-permissions/matrix/', { params: { role_id: roleId } }),
   updateRolePermission: (id, data) => api.patch(`/role-permissions/${id}/`, data),
   createRolePermission: (data) => api.post('/role-permissions/', data),
   bulkUpdateRolePermissions: (data) => api.post('/role-permissions/bulk-update/', data),
@@ -133,6 +137,11 @@ export const permissionsAPI = {
   createUserPermission: (data) => api.post('/user-permissions/', data),
   deleteUserPermission: (id) => api.delete(`/user-permissions/${id}/`),
   bulkUpdateUserPermissions: (data) => api.post('/user-permissions/bulk-update/', data),
+
+  // Station permissions
+  getStationPermissions: (stationId) => api.get('/station-permissions/', stationId ? { params: { station: stationId } } : {}),
+  getStationPermissionMatrix: (stationId) => api.get('/station-permissions/matrix/', { params: { station_id: stationId } }),
+  bulkUpdateStationPermissions: (data) => api.post('/station-permissions/bulk-update/', data),
 };
 
 // Helper function to get full image URL

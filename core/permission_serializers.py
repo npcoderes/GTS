@@ -4,7 +4,7 @@ Handles serialization/deserialization of permission-related models.
 """
 
 from rest_framework import serializers
-from .permission_models import Permission, RolePermission, UserPermission
+from .permission_models import Permission, RolePermission, UserPermission, StationPermission
 from .models import Role, User
 
 
@@ -105,3 +105,31 @@ class UserPermissionsResponseSerializer(serializers.Serializer):
     """Serializer for user permissions response"""
     
     permissions = serializers.DictField(child=serializers.BooleanField())
+
+
+class StationPermissionSerializer(serializers.ModelSerializer):
+    """Serializer for StationPermission model"""
+    
+    permission_code = serializers.CharField(source='permission.code', read_only=True)
+    permission_name = serializers.CharField(source='permission.name', read_only=True)
+    permission_category = serializers.CharField(source='permission.category', read_only=True)
+    permission_platform = serializers.CharField(source='permission.platform', read_only=True)
+    station_name = serializers.CharField(source='station.name', read_only=True)
+    
+    class Meta:
+        model = StationPermission
+        fields = [
+            'id', 'station', 'station_name',
+            'permission', 'permission_code', 'permission_name', 'permission_category',
+            'permission_platform', 'granted', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class StationPermissionCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating StationPermission"""
+    
+    class Meta:
+        model = StationPermission
+        fields = ['station', 'permission', 'granted']
+

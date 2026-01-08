@@ -10,6 +10,7 @@ from core.error_response import (
 )
 from .models import Trip, MSFilling, Token
 from core.models import Station
+from core.permission_views import station_has_scada
 from datetime import datetime, timedelta
 import os
 
@@ -97,6 +98,9 @@ class MSDashboardView(views.APIView):
             # Map status for display
             if status_val == 'DECANTING_CONFIRMED':
                 display_status = 'AT_DBS'
+
+            if status_val == 'FILLED':
+                display_status = 'AT_MS'
             
             # Map to summary counts
             # Pending: At MS (Pending, Arrived, Filling, Filled but not dispatch)
@@ -250,15 +254,31 @@ class MSConfirmArrivalView(views.APIView):
             return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
+        ms = trip.ms
 
-        # Verify user is from correct MS?
-        # Assuming permissions handle general MS access for now.
+        # Check bay availability before confirming arrival
+        # This prevents MS operator from confirming if all bays are full
+        occupied_count = MSFilling.objects.filter(
+            trip__ms=ms,
+            trip__status__in=['PENDING', 'AT_MS'],
+            confirmed_by_ms_operator__isnull=True,
+        ).exclude(
+            prefill_mfm__isnull=True,
+            prefill_pressure_bar__isnull=True,
+        ).count()
+        
+        total_bays = getattr(ms, 'no_of_bays', 2) or 2
+        free_bays = max(0, total_bays - occupied_count)
+        
+        if free_bays <= 0:
+            return validation_error_response(
+                'All filling bays are currently occupied. Please wait for a bay to become available.'
+            )
 
-        if trip.status == 'PENDING': # Or other valid statuses?
+        if trip.status == 'PENDING':
              trip.status = 'AT_MS'
              trip.save()
         elif trip.status != 'AT_MS':
-             # Maybe force update?
              trip.status = 'AT_MS'
              trip.save()
 
@@ -270,6 +290,11 @@ class MSConfirmArrivalView(views.APIView):
 
         return Response({
             "success": True,
+            "bay_status": {
+                "total_bays": total_bays,
+                "occupied_bays": occupied_count + 1,  # This truck now occupies a bay
+                "free_bays": max(0, free_bays - 1),
+            },
             "trip": {
                 "id": f"{trip.id}",
                 "status": "AT_MS",
@@ -282,66 +307,148 @@ class MSFillResumeView(views.APIView):
     """
     API Path: POST /api/ms/fill/resume
     Resume filling process and get current state.
-    """
-    """
-    Resume MS Filling - Get current filling state when operator reopens app
-
-    POST /api/ms/fill/resume
-    Payload: { "tripToken": "TOKEN123" }
-
-    Returns existing MSFilling data if operator closed app after entering pre-reading
+    
+    Two modes:
+    1. Without tripToken/tripId: Returns list of trucks at the MS station
+       Response: { "trucks": [...], "scada_available": bool }
+    
+    2. With tripToken/tripId: Returns specific trip filling state
+       Response: { "tripId": ..., "scada_available": bool, "prefill_scada_reading": string, ... }
     """
     permission_classes = [IsAuthenticated]
+
+    def get_bay_status(self, ms):
+        """
+        Calculate occupied and free bays for an MS station.
+        
+        Occupied = Trips with MSFilling created (prefill submitted) but NOT confirmed by MS operator.
+        Once MS operator confirms, the bay is freed (truck is leaving).
+        """
+        # Get count of trips that are currently occupying bays
+        # Bay is occupied when: MSFilling exists with prefill data but NOT confirmed by operator
+        occupied_count = MSFilling.objects.filter(
+            trip__ms=ms,
+            trip__status__in=['PENDING', 'AT_MS'],
+            confirmed_by_ms_operator__isnull=True,  # Not yet confirmed = bay still occupied
+        ).exclude(
+            prefill_mfm__isnull=True,
+            prefill_pressure_bar__isnull=True,
+        ).count()
+        
+        total_bays = getattr(ms, 'no_of_bays', 2) or 2
+        free_bays = max(0, total_bays - occupied_count)
+        
+        return {
+            'total_bays': total_bays,
+            'occupied_bays': occupied_count,
+            'free_bays': free_bays,
+        }
 
     def post(self, request):
         token_val = request.data.get('tripToken')
         trip_id = request.data.get('tripId')
         user = request.user
 
+        # Get user's MS station
+        ms = None
+        user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
+        if user_role and user_role.station and user_role.station.type == 'MS':
+            ms = user_role.station
+        
+        if not ms:
+            return validation_error_response('User is not assigned to an MS station')
+
+        # Check if this station has SCADA capability
+        scada_available = station_has_scada(ms)
+
+        # MODE 1: Without token - return list of trucks at this MS
+        if not token_val and not trip_id:
+            # Calculate bay status
+            bay_status = self.get_bay_status(ms)
+            
+            # Find all in-progress trips at this MS
+            trips = Trip.objects.select_related(
+                'token', 'vehicle', 'driver', 'ms', 'dbs', 'vehicle_token'
+            ).prefetch_related('ms_fillings').filter(
+                ms=ms,
+                status__in=[
+                    'PENDING',
+                    'AT_MS',
+                    'IN_TRANSIT',
+                    'AT_DBS',
+                    'DECANTING_CONFIRMED',
+                    'RETURNED_TO_MS'
+                ]
+            ).order_by('vehicle_token__sequence_number', '-origin_confirmed_at', '-created_at')
+            
+            trucks = []
+            count=0
+            print(count)
+            for trip in trips:
+                count = count + 1
+                # Determine current step based on status and filling data
+                filling = trip.ms_fillings.first()
+                is_filling = False  # Currently occupying a bay
+                
+                if filling and filling.confirmed_by_ms_operator_id:
+                    current_step = 'dispatched'
+                elif filling and (filling.postfill_mfm or filling.postfill_pressure_bar):
+                    current_step = 'post_reading'
+                    is_filling = True  # Bay still occupied until confirmed
+                elif filling and (filling.prefill_mfm or filling.prefill_pressure_bar):
+                    current_step = 'filling'
+                    is_filling = True  # Bay occupied
+                elif trip.ms_arrival_confirmed:
+                    current_step = 'arrived'
+                else:
+                    current_step = 'waiting'
+                
+                # Get token sequence for sorting display
+                token_sequence = None
+                if hasattr(trip, 'vehicle_token') and trip.vehicle_token:
+                    token_sequence = trip.vehicle_token.sequence_number
+                
+                # Determine if truck can start filling
+                # Can fill if: already filling OR free bays available
+                can_fill = is_filling or bay_status['free_bays'] > 0
+                if count >=3:
+                    can_fill=False
+                
+                trucks.append({
+                    'tripId': trip.id,
+                    'tripToken': trip.token.token_no if trip.token else None,
+                    'vehicleNumber': trip.vehicle.registration_no if trip.vehicle else None,
+                    'currentStep': current_step,
+                    'scada_available': scada_available,
+                    'driverName': trip.driver.full_name if trip.driver else None,
+                    'dbsName': trip.dbs.name if trip.dbs else None,
+                    'status': trip.status,
+                    'token_sequence': token_sequence,
+                    'is_filling': is_filling,
+                    'can_fill': can_fill,
+                })
+            
+            return Response({
+                'trucks': trucks,
+                'bay_status': bay_status,
+                'scada_available': scada_available,
+                'station': {
+                    'id': ms.id,
+                    'name': ms.name,
+                    'code': ms.code,
+                }
+            })
+
+        # MODE 2: With token - return specific trip details
         try:
-            # Try to find trip by token first, then by tripId, then by MS station
             if token_val:
                 trip = Trip.objects.select_related(
                     'token', 'vehicle', 'driver', 'ms', 'dbs'
                 ).prefetch_related('ms_fillings').get(token__token_no=token_val)
-            elif trip_id:
+            else:
                 trip = Trip.objects.select_related(
                     'token', 'vehicle', 'driver', 'ms', 'dbs'
                 ).prefetch_related('ms_fillings').get(id=trip_id)
-            else:
-                # Auto-find trip by MS station where ms_arrival_confirmed is True
-                # Get user's MS station
-                ms = None
-                user_role = user.user_roles.filter(role__code='MS_OPERATOR', active=True).first()
-                if user_role and user_role.station and user_role.station.type == 'MS':
-                    ms = user_role.station
-                
-                if not ms:
-                    return validation_error_response('User is not assigned to an MS station')
-                
-                # Find an in-progress trip at this MS (fallback when no token/tripId is provided)
-                trip = Trip.objects.select_related(
-                    'token', 'vehicle', 'driver', 'ms', 'dbs'
-                ).prefetch_related('ms_fillings').filter(
-                    ms=ms,
-                    status__in=[
-                        'PENDING',
-                        'AT_MS',
-                        'IN_TRANSIT',
-                        'AT_DBS',
-                        'DECANTING_CONFIRMED',
-                        'RETURNED_TO_MS'
-                    ]
-                ).order_by('-origin_confirmed_at', '-created_at').first()
-                
-                if not trip:
-                    return Response({
-                        'hasFillingData': False,
-                        'tripToken': None,
-                        'vehicleNumber': None,
-                        'ms_arrival_confirmed': False,
-                        'message': 'No confirmed trip found at this MS'
-                    })
             
             # Get token value for response
             actual_token = trip.token.token_no if trip.token else token_val
@@ -351,64 +458,44 @@ class MSFillResumeView(views.APIView):
             filling = trip.ms_fillings.first()
 
             if not filling:
-                # No filling record yet, return empty state
+                # No filling record yet, return empty state with SCADA info
+                bay_status = self.get_bay_status(ms)
                 return Response({
+                    'tripId': trip.id,
                     'hasFillingData': False,
+                    'bay_status': bay_status,
                     'tripToken': actual_token,
                     'vehicleNumber': vehicle_number,
-                    'ms_arrival_confirmed': trip.ms_arrival_confirmed
-                    # 'trip': {
-                    #     'id': trip.id,
-                    #     'status': trip.status,
-                    #     'currentStep': trip.current_step,
-                    #     'vehicle': {
-                    #         'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                    #         'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                    #     },
-                    #     'driver': {
-                    #         'name': trip.driver.full_name if trip.driver else None,
-                    #     },
-                    #     'route': {
-                    #         'from': trip.ms.name if trip.ms else None,
-                    #         'to': trip.dbs.name if trip.dbs else None,
-                    #     }
-                    # }
+                    'ms_arrival_confirmed': trip.ms_arrival_confirmed,
+                    'scada_available': scada_available,
+                    'prefill_scada_reading': None,
                 })
+            
             base_url = os.getenv('BASE_URL', 'http://localhost:8000')
 
             if filling.confirmed_by_ms_operator_id:
+                bay_status = self.get_bay_status(ms)
                 return Response({
-                        'hasFillingData': False,
-                        'tripToken': None,
-                        'vehicleNumber': None,
-                        'ms_arrival_confirmed': False,
-                        'message': 'No ongoing filling found for this trip'
-                    })
+                    'hasFillingData': False,
+                    'tripToken': None,
+                    'vehicleNumber': None,
+                    'bay_status': bay_status,
+                    'ms_arrival_confirmed': False,
+                    'message': 'No ongoing filling found for this trip',
+                    'scada_available': scada_available,
+                })
 
-            # Return existing filling data
-
+            # Return existing filling data with SCADA info
+            bay_status = self.get_bay_status(ms)
             return Response({
+                'tripId': trip.id,
                 'hasFillingData': True,
+                'bay_status': bay_status,
                 'tripToken': actual_token,
                 'vehicleNumber': vehicle_number,
                 'ms_arrival_confirmed': trip.ms_arrival_confirmed,
-                # 'trip': {
-                #     'id': trip.id,
-                #     'status': trip.status,
-                #     'currentStep': trip.current_step,
-                #     'stepData': trip.step_data,
-                #     'vehicle': {
-                #         'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                #         'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                #     },
-                #     'driver': {
-                #         'name': trip.driver.full_name if trip.driver else None,
-                #     },
-                #     'route': {
-                #         'from': trip.ms.name if trip.ms else None,
-                #         'to': trip.dbs.name if trip.dbs else None,
-                #     }
-                # },
+                'scada_available': scada_available,
+                'prefill_scada_reading': str(filling.prefill_mfm) if filling.prefill_mfm else None,
                 'fillingData': {
                     'id': filling.id,
                     'trip_id': trip.id,
@@ -456,6 +543,65 @@ class MSFillStartView(views.APIView):
             return validation_error_response('tripToken is required')
 
         trip = get_object_or_404(Trip, token__token_no=token_val)
+        ms = trip.ms
+        
+        # Validate sequential filling order (FIFO - First In, First Out)
+        # Trucks must start filling in token sequence order
+        # if hasattr(trip, 'vehicle_token') and trip.vehicle_token:
+        #     current_sequence = trip.vehicle_token.sequence_number
+            
+        #     # Check if there are earlier sequence trucks that haven't started filling yet
+        #     # Look for trips with:
+        #     # - Same MS and same token date
+        #     # - Lower sequence number (arrived earlier)
+        #     # - Still at MS (status PENDING or AT_MS)
+        #     # - Haven't started filling (no prefill data in MSFilling)
+        #     earlier_trucks_waiting = Trip.objects.filter(
+        #         ms=ms,
+        #         status__in=['PENDING', 'AT_MS'],
+        #         vehicle_token__sequence_number__lt=current_sequence,
+        #         vehicle_token__token_date=trip.vehicle_token.token_date,
+        #     ).exclude(
+        #         # Exclude trucks that have already started filling (have MSFilling with prefill data)
+        #         id__in=MSFilling.objects.filter(
+        #             trip__ms=ms,
+        #             trip__status__in=['PENDING', 'AT_MS'],
+        #             trip__vehicle_token__token_date=trip.vehicle_token.token_date,
+        #         ).exclude(
+        #             prefill_mfm__isnull=True,
+        #             prefill_pressure_bar__isnull=True,
+        #         ).values_list('trip_id', flat=True)
+        #     ).exists()
+            
+        #     if earlier_trucks_waiting:
+        #         # Get the first waiting truck's sequence for better error message
+        #         first_waiting = Trip.objects.filter(
+        #             ms=ms,
+        #             status__in=['PENDING', 'AT_MS'],
+        #             vehicle_token__sequence_number__lt=current_sequence,
+        #             vehicle_token__token_date=trip.vehicle_token.token_date,
+        #         ).exclude(
+        #             id__in=MSFilling.objects.filter(
+        #                 trip__ms=ms,
+        #                 trip__status__in=['PENDING', 'AT_MS'],
+        #                 trip__vehicle_token__token_date=trip.vehicle_token.token_date,
+        #             ).exclude(
+        #                 prefill_mfm__isnull=True,
+        #                 prefill_pressure_bar__isnull=True,
+        #             ).values_list('trip_id', flat=True)
+        #         ).select_related('vehicle_token', 'vehicle').order_by('vehicle_token__sequence_number').first()
+                
+        #         if first_waiting and first_waiting.vehicle_token:
+        #             waiting_seq = first_waiting.vehicle_token.sequence_number
+        #             waiting_vehicle = first_waiting.vehicle.registration_no if first_waiting.vehicle else 'Unknown'
+        #             return validation_error_response(
+        #                 f'Cannot start filling. Vehicle with sequence #{waiting_seq} ({waiting_vehicle}) arrived first and must fill before you. '
+        #                 f'Please wait for earlier vehicles to start filling.'
+        #             )
+        #         else:
+        #             return validation_error_response(
+        #                 'Cannot start filling. Vehicles that arrived before you must fill first. Please wait.'
+        #             )
         
         # Handle photo upload
         photo_file = None
@@ -685,6 +831,11 @@ class MSConfirmFillingView(views.APIView):
             filling.confirmed_by_ms_operator = request.user
             filling.save()
 
+            # Update trip status to FILLED - this frees up the bay
+            # Bay is considered occupied while trip status is 'AT_MS'
+            # Once operator confirms, truck is ready to leave, so we mark as FILLED
+            trip.status = 'FILLED'
+            
             # Mark operator confirmed in step_data
             # Stay at step 3 until driver also confirms
             if trip.current_step >= 3:

@@ -312,8 +312,34 @@ class ShiftViewSet(viewsets.ModelViewSet):
         """
         Update shift with overlap validation.
         Updated shift requires EIC approval again.
+        
+        Rules:
+        - Cannot update shifts that have already started
+        - Cannot update shifts in the past
+        - Can only update PENDING or future APPROVED shifts
         """
         shift = self.get_object()
+        now = timezone.now()
+        
+        # Validation: Cannot update shifts that have already started
+        if shift.start_time <= now:
+            shift_start_local = timezone.localtime(shift.start_time)
+            return Response({
+                'error': 'Cannot update shift',
+                'message': f'This shift has already started at {shift_start_local.strftime("%Y-%m-%d %I:%M %p")}. You cannot modify shifts that are in progress or have passed.',
+                'shift_id': shift.id,
+                'shift_start': shift_start_local.isoformat()
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation: Cannot update REJECTED or EXPIRED shifts
+        if shift.status in ['REJECTED', 'EXPIRED']:
+            return Response({
+                'error': 'Cannot update shift',
+                'message': f'This shift has status "{shift.status}" and cannot be updated. Please create a new shift instead.',
+                'shift_id': shift.id,
+                'status': shift.status
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         driver_id = request.data.get('driver', shift.driver_id)
         vehicle_id = request.data.get('vehicle', shift.vehicle_id)
         start_time = request.data.get('start_time', shift.start_time)
@@ -402,6 +428,55 @@ class ShiftViewSet(viewsets.ModelViewSet):
             'status': updated_shift.status,
             'data': serializer.data
         })
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Delete shift with validation.
+        
+        Rules:
+        - Cannot delete shifts that have already started
+        - Cannot delete shifts in the past
+        - Can only delete future shifts
+        """
+        shift = self.get_object()
+        now = timezone.now()
+        
+        # Validation: Cannot delete shifts that have already started
+        if shift.start_time <= now:
+            shift_start_local = timezone.localtime(shift.start_time)
+            return Response({
+                'error': 'Cannot delete shift',
+                'message': f'This shift has already started at {shift_start_local.strftime("%Y-%m-%d %I:%M %p")}. You cannot delete shifts that are in progress or have passed.',
+                'shift_id': shift.id,
+                'shift_start': shift_start_local.isoformat()
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if shift is being used in an active trip
+        from .models import Trip
+        active_trip = Trip.objects.filter(
+            driver=shift.driver,
+            vehicle=shift.vehicle,
+            status__in=['PENDING', 'AT_MS', 'IN_TRANSIT', 'AT_DBS', 'DECANTING_CONFIRMED', 'FILLED']
+        ).first()
+        
+        if active_trip:
+            return Response({
+                'error': 'Cannot delete shift',
+                'message': f'This shift is associated with an active trip (Trip #{active_trip.id}). Complete or cancel the trip first.',
+                'shift_id': shift.id,
+                'trip_id': active_trip.id
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Perform deletion
+        shift_id = shift.id
+        shift_info = f"{shift.driver.full_name if shift.driver else 'Unknown'} - {timezone.localtime(shift.start_time).strftime('%Y-%m-%d %I:%M %p')}"
+        shift.delete()
+        
+        return Response({
+            'success': True,
+            'message': f'Shift deleted successfully: {shift_info}',
+            'shift_id': shift_id
+        }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
         """
@@ -687,6 +762,18 @@ class TripCompleteView(views.APIView):
         trip.ms_return_at = timezone.now()
         trip.completed_at = timezone.now()
         trip.save()  # Signal will auto-create reconciliation
+        
+        # Expire the VehicleToken (queue token) associated with this trip
+        try:
+            vehicle_token = trip.vehicle_token
+            if vehicle_token and vehicle_token.status != 'EXPIRED':
+                vehicle_token.status = 'EXPIRED'
+                vehicle_token.expired_at = timezone.now()
+                vehicle_token.expiry_reason = 'TRIP_COMPLETED'
+                vehicle_token.save()
+                logger.info(f"Token {vehicle_token.token_no} expired after trip {trip.id} completed")
+        except Exception as e:
+            logger.warning(f"Failed to expire token for trip {trip.id}: {e}")
         
         # SAP Sync (GTS11) - Non-blocking
         try:

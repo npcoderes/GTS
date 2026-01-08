@@ -120,8 +120,9 @@ class DriverSerializer(serializers.ModelSerializer):
         if request and hasattr(request, 'user') and not validated_data.get('vendor'):
             validated_data['vendor'] = request.user
             
-        if not email or not password or not phone:
-            raise serializers.ValidationError("Email, Phone, and Password are required for new driver.")
+        # Phone and password are required, email is optional
+        if not phone or not password:
+            raise serializers.ValidationError("Phone and Password are required for new driver.")
             
         from core.models import User, Role, UserRole
         from core.utils import send_welcome_email
@@ -131,10 +132,20 @@ class DriverSerializer(serializers.ModelSerializer):
         logger = logging.getLogger(__name__)
         
         with transaction.atomic():
-            if User.objects.filter(email=email).exists():
-                raise serializers.ValidationError({"email": "User with this email already exists."})
+            # Check if phone already exists (phone is the ultimate source of truth)
             if User.objects.filter(phone=phone).exists():
-                raise serializers.ValidationError({"phone": "User with this phone already exists."})
+                raise serializers.ValidationError({"phone": "User with this phone number already exists."})
+            
+            # Check email only if provided
+            if email and User.objects.filter(email=email).exists():
+                raise serializers.ValidationError({"email": "User with this email already exists."})
+            
+            # If no email provided, use phone as email (required by User model)
+            # Format: phone@driver.sgl (e.g., +919876543210@driver.sgl)
+            if not email:
+                # Clean phone number for email format (remove spaces, +, etc.)
+                clean_phone = ''.join(filter(str.isdigit, phone))
+                email = f"{clean_phone}@driver.sgl"
                 
             user = User.objects.create_user(
                 email=email, 
@@ -152,11 +163,12 @@ class DriverSerializer(serializers.ModelSerializer):
             validated_data['user'] = user
             driver = super().create(validated_data)
             
-            # Send welcome email with credentials
-            try:
-                send_welcome_email(user, password)
-            except Exception as e:
-                logger.error(f"Failed to send welcome email to driver {user.email}: {e}", exc_info=True)
+            # Send welcome email with credentials only if real email was provided
+            if not email.endswith('@driver.sgl'):
+                try:
+                    send_welcome_email(user, password)
+                except Exception as e:
+                    logger.error(f"Failed to send welcome email to driver {user.email}: {e}", exc_info=True)
                     
         return driver
 

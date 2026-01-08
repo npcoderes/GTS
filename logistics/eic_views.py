@@ -12,16 +12,44 @@ from .models import (
     Vehicle, Driver, StockRequest, Token, Trip,
     MSFilling, DBSDecanting, Reconciliation, Alert, Shift
 )
+from core.models import Station
 from .serializers import (
     VehicleSerializer, DriverSerializer, StockRequestSerializer,
     TokenSerializer, TripSerializer, MSFillingSerializer,
     DBSDecantingSerializer, ReconciliationSerializer, AlertSerializer, ShiftSerializer,
     EICStockRequestListSerializer
 )
-from .services import get_available_drivers
-from core.models import Station, User
 
-# --- Helper Functions ---
+def expire_old_pending_shifts():
+    """
+    Expire pending shifts that have passed their END time without approval.
+    This means the entire shift window has passed and the shift was never approved.
+    
+    Changed from start_time to end_time so that shifts created for "today" 
+    don't get immediately expired just because the start time has passed.
+    """
+    from .models import Shift
+    from django.utils import timezone
+    
+    now = timezone.now()
+    try:
+        updated_count = Shift.objects.filter(
+            status='PENDING',
+            end_time__lt=now  # Expire only when the shift window has completely ended
+        ).update(status='EXPIRED')
+        if updated_count > 0:
+            print(f"Expired {updated_count} pending shifts.")
+    except Exception as e:
+        print(f"Error expiring shifts: {e}")
+
+def get_available_drivers(ms_id):
+    """
+    Get available drivers at a specific MS (parent station).
+    """
+    from .models import Driver, Trip, Shift, VehicleToken
+    from django.utils import timezone
+    from django.db.models import Q
+
 def get_trip_by_token(token_id):
     return get_object_or_404(Trip, token__id=token_id)
 
@@ -204,7 +232,6 @@ class EICStockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                                         'stock_request_id': str(stock_request.id),
                                         'from_ms': ms_name,
                                         'to_dbs': dbs_name,
-                                        'quantity': str(stock_request.requested_qty_kg) if stock_request.requested_qty_kg else 'Not Available'
                                     }
                                 )
                                 driver_notified = True
@@ -581,6 +608,9 @@ class EICDriverApprovalView(views.APIView):
         if not check_eic_permission(request.user):
             return forbidden_response('Permission denied')
         
+        # Trigger expiration of old pending shifts
+        expire_old_pending_shifts()
+        
         # Get pending shifts with driver and vehicle details
         pending_shifts = Shift.objects.select_related(
             'driver', 'vehicle', 'created_by'
@@ -630,12 +660,14 @@ class EICDriverApprovalView(views.APIView):
                 'licenseVerified': driver.license_verified,
                 'trainingModules': [],  # Not implemented yet
                 'remarks': '',
-                'documents': None,  # Currently null as requested
+                'licenseDocument': request.build_absolute_uri(driver.license_document.url) if driver.license_document else None,
+                'vehicleDocument': request.build_absolute_uri(shift.vehicle.registration_document.url) if shift.vehicle and shift.vehicle.registration_document else None,
                 
                 # Additional useful fields
                 'shiftId': shift.id,
                 'shiftDate': local_start.strftime('%Y-%m-%d') if local_start else None,
                 'vehicleNumber': shift.vehicle.registration_no if shift.vehicle else None,
+                'vehicleCapacity': 0.0,
                 'createdBy': shift.created_by.get_full_name() if shift.created_by else 'System',
                 'createdAt': local_created.isoformat() if local_created else None
             })
@@ -644,14 +676,59 @@ class EICDriverApprovalView(views.APIView):
             'pending': pending_list
         })
 
+class EICBulkApproveView(views.APIView):
+    # API Path: POST /api/eic/driver-approvals/bulk-approve
+    # Bulk approve pending driver shifts.
+    # Payload: start_date, end_date, driver_id (optional)
+    def post(self, request):
+        if not check_eic_permission(request.user):
+            return forbidden_response('Permission denied')
+        
+        start_date = request.data.get('start_date')
+        end_date = request.data.get('end_date')
+        driver_id = request.data.get('driver_id')
+        
+        if not start_date or not end_date:
+            return validation_error_response('start_date and end_date are required')
+            
+        try:
+            # Expire old shifts first to avoid approving stale ones
+            expire_old_pending_shifts()
+            
+            # Find pending shifts in range
+            query = Shift.objects.filter(
+                status='PENDING',
+                start_time__date__gte=start_date,
+                start_time__date__lte=end_date
+            )
+            
+            if driver_id:
+                query = query.filter(driver_id=driver_id)
+                
+            count = query.count()
+            
+            if count == 0:
+                return Response({'success': True, 'message': 'No pending shifts found to approve', 'count': 0})
+                
+            # Update all to APPROVED
+            query.update(
+                status='APPROVED', 
+                approved_by=request.user,
+                updated_at=timezone.now()
+            )
+            
+            return Response({
+                'success': True, 
+                'message': f'Successfully approved {count} shifts', 
+                'count': count
+            })
+            
+        except Exception as e:
+            return server_error_response(f'Bulk approval failed: {str(e)}')
+
+
 class EICPermissionsView(views.APIView):
-    """
-    API Path: GET /api/eic/permissions
-    Returns EIC user's permissions.
-    """
-    """
-    Get current EIC user's permissions
-    """
+    # API Path: GET /api/eic/permissions. Get current EIC user permissions.
     def get(self, request):
         if not check_eic_permission(request.user):
             return forbidden_response('Permission denied')
@@ -687,10 +764,8 @@ class EICPermissionsView(views.APIView):
 # =============================================================================
 
 class EICNetworkStationsView(views.APIView):
-    """
-    API Path: GET /api/eic/network-stations
-    Returns only MS and DBS stations without trips data for better performance.
-    """
+    # API Path: GET /api/eic/network-stations
+    # Returns only MS and DBS stations without trips data for better performance.
     def get(self, request):
         from core.models import UserRole, MSDBSMap
         
@@ -750,10 +825,8 @@ class EICNetworkStationsView(views.APIView):
 
 
 class EICNetworkTripsView(views.APIView):
-    """
-    API Path: GET /api/eic/network-trips
-    Returns trips data with optional filtering by msId and/or dbsId.
-    """
+    # API Path: GET /api/eic/network-trips
+    # Returns trips data with optional filtering by msId and/or dbsId.
     def get(self, request):
         from core.models import UserRole
         from django.conf import settings
@@ -826,16 +899,9 @@ class EICNetworkTripsView(views.APIView):
 
 
 class EICNetworkOverviewView(views.APIView):
-    """
-    API Path: GET /api/eic/network-overview
-    Network overview showing stations, active trips, and driver status.
-    """
-    """
-    GET /api/eic/network-overview
-    Returns MS stations, DBS stations, and their trip schedules for the dashboard.
-    NOTE: Vehicle location is derived from trip status (no VTS available).
-    NOTE: Only shows MS stations assigned to this EIC user.
-    """
+    # API Path: GET /api/eic/network-overview
+    # Network overview: Returns MS stations, DBS stations, and trip schedules.
+    # NOTE: Only shows MS stations assigned to this EIC user.
     def get(self, request):
         from core.models import UserRole
         

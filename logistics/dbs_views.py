@@ -8,6 +8,7 @@ from django.utils import timezone
 from datetime import datetime, timedelta
 from .models import Trip, StockRequest
 from core.models import Station
+from core.permission_views import station_has_scada
 from core.error_response import (
     validation_error_response, not_found_response, server_error_response
 )
@@ -92,10 +93,16 @@ class DBSDashboardView(views.APIView):
                 # Trip just started or in early stages - quantity not yet known
                 quantity = "Not Available"
 
+            display_status = trip.status
+            if display_status == 'DECANTING_CONFIRMED':
+                display_status = 'AT_DBS'
+            
+            if display_status == 'FILLED':
+                display_status = 'AT_MS'
             # Format Trip Data
             trip_data = {
                 "id": f"{trip.id}", # Format ID
-                "status": 'AT_DBS' if trip.status == 'DECANTING_CONFIRMED' else trip.status,
+                "status": display_status,
                 "route": f"from {trip.ms.name} to {trip.dbs.name}",
                 "msName": trip.ms.name,
                 "dbsName": trip.dbs.name,
@@ -187,7 +194,16 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
         user = request.user
 
         try:
-            # Try to find trip by token first, then by tripId, then by DBS station
+            # 1. Get User's Station & SCADA Status first
+            dbs = None
+            scada_available = False
+            
+            user_role = user.user_roles.filter(role__code='DBS_OPERATOR', active=True).first()
+            if user_role and user_role.station and user_role.station.type == 'DBS':
+                dbs = user_role.station
+                scada_available = station_has_scada(dbs)
+
+            # 2. Try to find trip by token/ID, or auto-find at this DBS
             if token_val:
                 trip = Trip.objects.select_related(
                     'token', 'vehicle', 'driver', 'ms', 'dbs'
@@ -197,24 +213,15 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                     'token', 'vehicle', 'driver', 'ms', 'dbs'
                 ).prefetch_related('dbs_decantings').get(id=trip_id)
             else:
-                # Auto-find trip by DBS station where dbs_arrival_confirmed is True
-                # Get user's DBS station
-                dbs = None
-                user_role = user.user_roles.filter(role__code='DBS_OPERATOR', active=True).first()
-                if user_role and user_role.station and user_role.station.type == 'DBS':
-                    dbs = user_role.station
-                
                 if not dbs:
                     return validation_error_response('User is not assigned to a DBS station')
                 
-                # Find trip at this DBS that is confirmed and in progress
-                # Valid statuses: PENDING, AT_MS, IN_TRANSIT, AT_DBS, DECANTING_CONFIRMED, RETURNED_TO_MS, COMPLETED, CANCELLED
-                # Invalid (not in model): DECANTING_STARTED, DECANTING_COMPLETE
+                # Auto-find trip: Find trip at this DBS that is confirmed and in progress
                 trip = Trip.objects.select_related(
                     'token', 'vehicle', 'driver', 'ms', 'dbs'
                 ).prefetch_related('dbs_decantings').filter(
                     dbs=dbs,
-                    status__in=['AT_DBS']  # 'DECANTING_STARTED', 'DECANTING_COMPLETE' - not in model STATUS_CHOICES
+                    status__in=['AT_DBS']
                 ).first()
                 
                 if not trip:
@@ -223,8 +230,17 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                         'tripToken': None,
                         'vehicleNumber': None,
                         'dbs_arrival_confirmed': False,
-                        'message': 'No confirmed trip found at this DBS'
+                        'message': 'No confirmed trip found at this DBS',
+                        'scada_available': scada_available,
+                        'station': {
+                            'id': dbs.id,
+                            'name': dbs.name
+                        }
                     })
+            
+            # Recalculate SCADA status if trip was found by token
+            if trip.dbs:
+                scada_available = station_has_scada(trip.dbs)
             
             # Get token value for response
             actual_token = trip.token.token_no if trip.token else token_val
@@ -235,29 +251,17 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
             decanting = trip.dbs_decantings.first()
 
             if not decanting:
-                # No decanting record yet, return empty state
+                # No decanting record yet, return empty state with SCADA info
                 return Response({
+                    'tripId': trip.id,
                     'hasDecantingData': False,
                     'tripToken': actual_token,
                     'vehicleNumber': vehicle_number,
                     'dbs_arrival_confirmed': trip.dbs_arrival_confirmed,
-                    # 'trip': {
-                    #     'id': trip.id,
-                    #     'status': trip.status,
-                    #     'currentStep': trip.current_step,
-                    #     'vehicle': {
-                    #         'registrationNo': trip.vehicle.registration_no if trip.vehicle else None,
-                    #         'capacity_kg': str(trip.vehicle.capacity_kg) if trip.vehicle else None,
-                    #     },
-                    #     'driver': {
-                    #         'name': trip.driver.full_name if trip.driver else None,
-                    #     },
-                    #     'route': {
-                    #         'from': trip.ms.name if trip.ms else None,
-                    #         'to': trip.dbs.name if trip.dbs else None,
-                    #     }
-                    # }
+                    'scada_available': scada_available,
+                    'prefill_scada_reading': None,
                 })
+            
             base_url = os.getenv('BASE_URL', 'http://localhost:8000')
 
             if decanting.confirmed_by_dbs_operator_id:
@@ -266,15 +270,19 @@ class DBSStockRequestViewSet(viewsets.ViewSet):
                         'tripToken': None,
                         'vehicleNumber': None,
                         'dbs_arrival_confirmed': False,
-                        'message': 'No confirmed trip found at this DBS'
+                        'message': 'No confirmed trip found at this DBS',
+                        'scada_available': scada_available,
                     })
 
-            # Return existing decanting data
+            # Return existing decanting data with SCADA info
             return Response({
+                'tripId': trip.id,
                 'hasDecantingData': True,
                 'tripToken': actual_token,
                 'vehicleNumber': vehicle_number,
                 'dbs_arrival_confirmed': trip.dbs_arrival_confirmed,
+                'scada_available': scada_available,
+                'prefill_scada_reading': str(decanting.pre_dec_reading) if decanting.pre_dec_reading else None,
                 'decantingData': {
                     'id': decanting.id,
                     'trip_id': trip.id,

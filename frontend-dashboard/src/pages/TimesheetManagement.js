@@ -27,6 +27,7 @@ const SHIFT_COLORS = {
     PENDING: { bg: '#fffbe6', border: '#faad14', text: '#ad6800' },
     APPROVED: { bg: '#f6ffed', border: '#52c41a', text: '#135200' },
     REJECTED: { bg: '#fff1f0', border: '#ff4d4f', text: '#a8071a' },
+    EXPIRED: { bg: '#fff2f0', border: '#ffccc7', text: '#c41d7f' },
 };
 
 const TimesheetManagement = () => {
@@ -53,6 +54,9 @@ const TimesheetManagement = () => {
     const [isFillWeekModalVisible, setIsFillWeekModalVisible] = useState(false);
     const [isFillMonthModalVisible, setIsFillMonthModalVisible] = useState(false);
     const [drivers, setDrivers] = useState([]);
+    const [filters, setFilters] = useState({ search: '', vendor: null });
+    const [vendors, setVendors] = useState([]);
+
     // Template Management
     const [isTemplateModalVisible, setIsTemplateModalVisible] = useState(false);
     const [templateForm] = Form.useForm();
@@ -66,20 +70,31 @@ const TimesheetManagement = () => {
             const startDate = weekStart.format('YYYY-MM-DD');
             const endDate = weekStart.clone().add(6, 'days').format('YYYY-MM-DD');
 
-            const response = await apiClient.get('/timesheet/', {
-                params: { start_date: startDate, end_date: endDate }
-            });
+            const params = {
+                start_date: startDate,
+                end_date: endDate,
+                ...filters
+            };
+
+            // Remove null/empty filters
+            if (!params.search) delete params.search;
+            if (!params.vendor) delete params.vendor;
+
+            const response = await apiClient.get('/timesheet/', { params });
 
             setTimesheetData(response.data);
             setTemplates(response.data.templates || []);
             setDrivers(response.data.drivers || []);
+            if (response.data.vendors) {
+                setVendors(response.data.vendors);
+            }
         } catch (error) {
             console.error('Failed to fetch timesheet:', error);
             message.error('Failed to load timesheet data');
         } finally {
             setLoading(false);
         }
-    }, [weekStart]);
+    }, [weekStart, filters]);
 
     // Fetch vehicles for assignment
     const fetchVehicles = async () => {
@@ -148,7 +163,7 @@ const TimesheetManagement = () => {
             const payload = {
                 driver_id: selectedCell.driverId,
                 vehicle_id: values.vehicle,
-                shift_date: selectedCell.date,
+                date: selectedCell.date,
                 notes: values.notes || ''
             };
 
@@ -180,7 +195,17 @@ const TimesheetManagement = () => {
             fetchTimesheet();
         } catch (error) {
             console.error('Assignment failed:', error);
-            message.error(error.response?.data?.message || 'Failed to save shift');
+            const errorData = error.response?.data;
+            if (error.response?.status === 409) {
+                // Conflict error - either driver already has shift or vehicle conflict
+                if (errorData?.conflicting_driver) {
+                    message.error(`Vehicle is already assigned to ${errorData.conflicting_driver} on this date`);
+                } else {
+                    message.error(errorData?.error || 'Shift already exists for this driver on this date');
+                }
+            } else {
+                message.error(errorData?.error || errorData?.message || 'Failed to save shift');
+            }
         }
     };
 
@@ -235,18 +260,26 @@ const TimesheetManagement = () => {
             // Get Monday of the target week
             const targetMonday = targetDate.clone().startOf('week');
 
-            await apiClient.post('/timesheet/copy-week/', {
+            const response = await apiClient.post('/timesheet/copy-week/', {
                 source_start_date: weekStart.format('YYYY-MM-DD'),
                 target_start_date: targetMonday.format('YYYY-MM-DD')
             });
-            message.success('Week copied successfully');
+
+            const data = response.data;
+            // Show detailed message based on results
+            if (data.vehicle_conflicts > 0 || data.skipped > 0) {
+                message.warning(data.message);
+            } else {
+                message.success(data.message || 'Week copied successfully');
+            }
+
             setIsCopyWeekModalVisible(false);
             copyForm.resetFields();
             // Navigate to the new week
             setWeekStart(targetMonday);
         } catch (error) {
             console.error('Copy week failed:', error);
-            message.error(error.response?.data?.message || 'Failed to copy week');
+            message.error(error.response?.data?.error || error.response?.data?.message || 'Failed to copy week');
         }
     };
 
@@ -255,19 +288,28 @@ const TimesheetManagement = () => {
         try {
             const values = await fillWeekForm.validateFields();
 
-            await apiClient.post('/timesheet/fill-week/', {
+            const response = await apiClient.post('/timesheet/fill-week/', {
                 driver_ids: values.driver_ids,
                 start_date: weekStart.format('YYYY-MM-DD'),
                 template_id: values.template_id,
+                vehicle_id: values.vehicle_id || null,  // Optional vehicle override
                 skip_existing: values.skip_existing !== false
             });
-            message.success('Week filled successfully');
+
+            const data = response.data;
+            // Show detailed message based on results
+            if (data.vehicle_conflicts > 0 || data.skipped > 0 || data.no_vehicle > 0) {
+                message.warning(data.message);
+            } else {
+                message.success(data.message || 'Week filled successfully');
+            }
+
             setIsFillWeekModalVisible(false);
             fillWeekForm.resetFields();
             fetchTimesheet();
         } catch (error) {
             console.error('Fill week failed:', error);
-            message.error(error.response?.data?.message || 'Failed to fill week');
+            message.error(error.response?.data?.error || error.response?.data?.message || 'Failed to fill week');
         }
     };
 
@@ -277,21 +319,30 @@ const TimesheetManagement = () => {
             const values = await fillMonthForm.validateFields();
             const targetMonth = values.target_month;
 
-            await apiClient.post('/timesheet/fill-month/', {
+            const response = await apiClient.post('/timesheet/fill-month/', {
                 driver_ids: values.driver_ids,
                 year: targetMonth.year(),
                 month: targetMonth.month() + 1, // moment months are 0-indexed
                 template_id: values.template_id,
+                vehicle_id: values.vehicle_id || null,  // Optional vehicle override
                 include_weekends: values.include_weekends !== false,
                 skip_existing: values.skip_existing !== false
             });
-            message.success('Month filled successfully');
+
+            const data = response.data;
+            // Show detailed message based on results
+            if (data.vehicle_conflicts > 0 || data.skipped > 0 || data.no_vehicle > 0) {
+                message.warning(data.message);
+            } else {
+                message.success(data.message || 'Month filled successfully');
+            }
+
             setIsFillMonthModalVisible(false);
             fillMonthForm.resetFields();
             fetchTimesheet();
         } catch (error) {
             console.error('Fill month failed:', error);
-            message.error(error.response?.data?.message || 'Failed to fill month');
+            message.error(error.response?.data?.error || error.response?.data?.message || 'Failed to fill month');
         }
     };
 
@@ -468,17 +519,20 @@ const TimesheetManagement = () => {
                 }}
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                    <Tag
-                        color={statusColors.border}
-                        style={{
-                            fontSize: 10,
-                            padding: '0 4px',
-                            borderRadius: 4,
-                            margin: 0
-                        }}
-                    >
-                        {status}
-                    </Tag>
+                    <Tooltip title={status === 'REJECTED' && shift.rejection_reason ? `Reason: ${shift.rejection_reason}` : status}>
+                        <Tag
+                            color={statusColors.border}
+                            style={{
+                                fontSize: 10,
+                                padding: '0 4px',
+                                borderRadius: 4,
+                                margin: 0,
+                                cursor: status === 'REJECTED' ? 'help' : 'default'
+                            }}
+                        >
+                            {status}
+                        </Tag>
+                    </Tooltip>
                     {canApproveReject && status === 'PENDING' && (
                         <Space size={2}>
                             <Tooltip title="Approve">
@@ -586,6 +640,46 @@ const TimesheetManagement = () => {
                 bordered={false}
                 style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}
             >
+                {/* Filters */}
+                <div style={{ marginBottom: 24, padding: '16px', background: '#f9f9fb', borderRadius: 8 }}>
+                    <Row gutter={16} align="middle">
+                        <Col xs={24} sm={8} md={6}>
+                            <Input
+                                placeholder="Search Driver or Vehicle..."
+                                prefix={<UserOutlined style={{ color: '#bfbfbf' }} />}
+                                allowClear
+                                onChange={(e) => setFilters(prev => ({ ...prev, search: e.target.value }))}
+                                style={{ width: '100%' }}
+                            />
+                        </Col>
+                        {vendors.length > 0 && (
+                            <Col xs={24} sm={8} md={6}>
+                                <Select
+                                    placeholder="Filter by Vendor"
+                                    allowClear
+                                    style={{ width: '100%' }}
+                                    onChange={(val) => setFilters(prev => ({ ...prev, vendor_id: val }))}
+                                >
+                                    {vendors.map(v => (
+                                        <Option key={v.id} value={v.id}>{v.full_name}</Option>
+                                    ))}
+                                </Select>
+                            </Col>
+                        )}
+                        <Col flex="auto" style={{ textAlign: 'right' }}>
+                            <Space>
+                                <Button
+                                    icon={<ReloadOutlined />}
+                                    onClick={fetchTimesheet}
+                                    loading={loading}
+                                >
+                                    Refresh
+                                </Button>
+                            </Space>
+                        </Col>
+                    </Row>
+                </div>
+
                 {/* Header */}
                 <div style={{
                     display: 'flex',
@@ -827,31 +921,41 @@ const TimesheetManagement = () => {
 
                     <Row gutter={16}>
                         <Col span={12}>
-                            <Form.Item
-                                name="start_time"
-                                label={<Text strong>Start Time</Text>}
-                            >
-                                <TimePicker
-                                    format="HH:mm"
-                                    size="large"
-                                    style={{ width: '100%' }}
-                                    placeholder="Start"
-                                    onChange={() => form.setFieldsValue({ template: null })}
-                                />
+                            <Form.Item shouldUpdate={(prev, curr) => prev.template !== curr.template}>
+                                {() => (
+                                    <Form.Item
+                                        name="start_time"
+                                        label={<Text strong>Start Time</Text>}
+                                    >
+                                        <TimePicker
+                                            format="HH:mm"
+                                            size="large"
+                                            style={{ width: '100%' }}
+                                            placeholder="Start"
+                                            disabled={!!form.getFieldValue('template')}
+                                            onChange={() => form.setFieldsValue({ template: null })}
+                                        />
+                                    </Form.Item>
+                                )}
                             </Form.Item>
                         </Col>
                         <Col span={12}>
-                            <Form.Item
-                                name="end_time"
-                                label={<Text strong>End Time</Text>}
-                            >
-                                <TimePicker
-                                    format="HH:mm"
-                                    size="large"
-                                    style={{ width: '100%' }}
-                                    placeholder="End"
-                                    onChange={() => form.setFieldsValue({ template: null })}
-                                />
+                            <Form.Item shouldUpdate={(prev, curr) => prev.template !== curr.template}>
+                                {() => (
+                                    <Form.Item
+                                        name="end_time"
+                                        label={<Text strong>End Time</Text>}
+                                    >
+                                        <TimePicker
+                                            format="HH:mm"
+                                            size="large"
+                                            style={{ width: '100%' }}
+                                            placeholder="End"
+                                            disabled={!!form.getFieldValue('template')}
+                                            onChange={() => form.setFieldsValue({ template: null })}
+                                        />
+                                    </Form.Item>
+                                )}
                             </Form.Item>
                         </Col>
                     </Row>
@@ -950,6 +1054,49 @@ const TimesheetManagement = () => {
                         </Select>
                     </Form.Item>
 
+                    <Form.Item shouldUpdate={(prev, curr) => prev.driver_ids !== curr.driver_ids}>
+                        {() => {
+                            const selectedDriverIds = fillWeekForm.getFieldValue('driver_ids') || [];
+                            // If only one driver selected, default to their vehicle
+                            if (selectedDriverIds.length === 1) {
+                                const driver = drivers.find(d => d.id === selectedDriverIds[0]);
+                                if (driver && driver.vehicle_id && !fillWeekForm.getFieldValue('vehicle_id')) {
+                                    fillWeekForm.setFieldsValue({ vehicle_id: driver.vehicle_id });
+                                }
+                            }
+                            return (
+                                <Form.Item
+                                    name="vehicle_id"
+                                    label={
+                                        <div>
+                                            <Text strong>Vehicle </Text>
+                                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                                (Optional - defaults to driver's assigned vehicle)
+                                            </Text>
+                                        </div>
+                                    }
+                                >
+                                    <Select
+                                        placeholder="Use driver's assigned vehicle"
+                                        size="large"
+                                        allowClear
+                                        showSearch
+                                        filterOption={(input, option) =>
+                                            (option?.children?.toLowerCase() || '').includes(input.toLowerCase())
+                                        }
+                                    >
+                                        {vehicles.map(v => (
+                                            <Option key={v.id} value={v.id}>
+                                                <CarOutlined style={{ marginRight: 8, color: '#1890ff' }} />
+                                                {v.registration_no}
+                                            </Option>
+                                        ))}
+                                    </Select>
+                                </Form.Item>
+                            );
+                        }}
+                    </Form.Item>
+
                     <Form.Item name="skip_existing" valuePropName="checked">
                         <Checkbox>Skip days with existing shifts</Checkbox>
                     </Form.Item>
@@ -1023,6 +1170,49 @@ const TimesheetManagement = () => {
                                 </Option>
                             ))}
                         </Select>
+                    </Form.Item>
+
+                    <Form.Item shouldUpdate={(prev, curr) => prev.driver_ids !== curr.driver_ids}>
+                        {() => {
+                            const selectedDriverIds = fillMonthForm.getFieldValue('driver_ids') || [];
+                            // If only one driver selected, default to their vehicle
+                            if (selectedDriverIds.length === 1) {
+                                const driver = drivers.find(d => d.id === selectedDriverIds[0]);
+                                if (driver && driver.vehicle_id && !fillMonthForm.getFieldValue('vehicle_id')) {
+                                    fillMonthForm.setFieldsValue({ vehicle_id: driver.vehicle_id });
+                                }
+                            }
+                            return (
+                                <Form.Item
+                                    name="vehicle_id"
+                                    label={
+                                        <div>
+                                            <Text strong>Vehicle </Text>
+                                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                                (Optional - defaults to driver's assigned vehicle)
+                                            </Text>
+                                        </div>
+                                    }
+                                >
+                                    <Select
+                                        placeholder="Use driver's assigned vehicle"
+                                        size="large"
+                                        allowClear
+                                        showSearch
+                                        filterOption={(input, option) =>
+                                            (option?.children?.toLowerCase() || '').includes(input.toLowerCase())
+                                        }
+                                    >
+                                        {vehicles.map(v => (
+                                            <Option key={v.id} value={v.id}>
+                                                <CarOutlined style={{ marginRight: 8, color: '#1890ff' }} />
+                                                {v.registration_no}
+                                            </Option>
+                                        ))}
+                                    </Select>
+                                </Form.Item>
+                            );
+                        }}
                     </Form.Item>
 
                     <Row gutter={16}>

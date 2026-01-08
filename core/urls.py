@@ -8,7 +8,7 @@ from core.sap_views import SAPStationView
 from core.sap_sync_views import SAPStationSyncView, SAPUserSyncView
 from core.permission_views import (
     user_permissions_view, PermissionViewSet, RolePermissionViewSet, 
-    UserPermissionViewSet, RoleListWithPermissionsView
+    UserPermissionViewSet, StationPermissionViewSet, RoleListWithPermissionsView
 )
 
 
@@ -25,6 +25,7 @@ router.register(r'ms-dbs-maps', views.MSDBSMapViewSet, basename='ms-dbs-map')
 router.register(r'permissions', PermissionViewSet, basename='permission')
 router.register(r'role-permissions', RolePermissionViewSet, basename='role-permission')
 router.register(r'user-permissions', UserPermissionViewSet, basename='user-permission')
+router.register(r'station-permissions', StationPermissionViewSet, basename='station-permission')
 
 urlpatterns = [
     path('auth/login/', views.login_view, name='login'),

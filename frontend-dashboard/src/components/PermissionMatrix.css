@@ -1,0 +1,107 @@
+/* Permission Matrix Styles */
+.permission-matrix {
+  width: 100%;
+  overflow: hidden;
+}
+
+.permission-matrix-loading,
+.permission-matrix-empty {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 60px 20px;
+}
+
+.matrix-scroll-container {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.matrix-table {
+  width: 100%;
+  min-width: 700px;
+  border-collapse: collapse;
+}
+
+/* Headers */
+.matrix-table th {
+  padding: 12px 8px;
+  font-weight: 600;
+  text-align: center;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.permission-header {
+  text-align: left !important;
+  min-width: 260px;
+}
+
+.role-header {
+  min-width: 90px;
+  max-width: 120px;
+}
+
+.role-header .role-name {
+  font-size: 12px;
+}
+
+/* Sticky column */
+.sticky-col {
+  position: sticky;
+  left: 0;
+  background: white;
+  z-index: 5;
+}
+
+/* Permission Row */
+.permission-row {
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.permission-row:hover {
+  background: #fafafa;
+}
+
+.permission-row:hover .sticky-col {
+  background: #fafafa;
+}
+
+/* Permission Cell */
+.permission-cell {
+  padding: 10px 12px;
+}
+
+.permission-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.permission-name {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.permission-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.permission-code {
+  font-size: 11px;
+  color: #999;
+}
+
+.platform-badge {
+  display: inline-flex;
+  font-size: 12px;
+  color: #999;
+}
+
+/* Toggle Cell */
+.toggle-cell {
+  text-align: center;
+  padding: 8px;
+}
